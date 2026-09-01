@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  --color-void: #0d0b0e;
+  --color-panel: #17141a;
+  --color-teal: #2ec4b6;
+  --color-orange: #ff6b35;
+  --color-mustard: #f5b700;
+  --color-cream: #f4ecd6;
+  --color-danger: #e63946;
+  --font-display: var(--font-display), sans-serif;
+  --font-body: var(--font-body), sans-serif;
+}
+
+body {
+  background: var(--color-void);
+  color: var(--color-cream);
+  font-family: var(--font-body);
+}
+
+/* CRT scanline overlay for the player */
+.scanlines::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0px,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0.14) 3px,
+    rgba(0, 0, 0, 0) 4px
+  );
+  mix-blend-mode: multiply;
+}
+
+.ticker {
+  animation: ticker 30s linear infinite;
+}
+@keyframes ticker {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.blink {
+  animation: blink 1.4s steps(2, start) infinite;
+}
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}

@@ -47,6 +47,19 @@ export interface InvoiceInfo {
   sats: number;
 }
 
+export interface ViewerSample {
+  id: string;
+  name: string;
+}
+
+export interface ActivityItem {
+  id: string;
+  type: "submission";
+  name: string;
+  title: string;
+  ts: number;
+}
+
 export interface NowPlaying {
   clip: Clip | null;
   /** Offset into the clip in ms at serverNow. */

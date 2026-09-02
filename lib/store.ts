@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { config } from "./config";
-import type { Clip, Job } from "./types";
+import type { ActivityItem, Clip, Job, ViewerSample } from "./types";
 
 /** Storage layer: Upstash Redis in production, in-memory Map for local dev.
  * The in-memory store does not survive across serverless instances — it is
@@ -22,7 +22,19 @@ interface Store {
   /** TTL flag, e.g. "fal is balance-locked, pause submissions". */
   setFlag(key: string, ttlSeconds: number): Promise<void>;
   getFlag(key: string): Promise<boolean>;
+  /** Presence heartbeat: viewers re-register on every poll; entries older
+   * than the TTL are pruned, so the count only reflects live browsers. */
+  touchPresence(viewerId: string, name: string): Promise<void>;
+  getPresence(): Promise<{ count: number; sample: ViewerSample[] }>;
+  /** Rolling public activity feed (paid submissions), newest first. */
+  pushActivity(item: ActivityItem): Promise<void>;
+  getActivity(): Promise<ActivityItem[]>;
 }
+
+const PRESENCE_KEY = "infinite:presence";
+const PRESENCE_TTL_MS = 30_000;
+const ACTIVITY_KEY = "infinite:activity";
+const ACTIVITY_MAX = 20;
 
 const CLIPS_KEY = "infinite:clips";
 const JOB_PREFIX = "infinite:job:";
@@ -77,6 +89,36 @@ class RedisStore implements Store {
   async getFlag(key: string): Promise<boolean> {
     return Boolean(await this.redis.get(`infinite:flag:${key}`));
   }
+  async touchPresence(viewerId: string, name: string): Promise<void> {
+    await this.redis.zadd(PRESENCE_KEY, {
+      score: Date.now(),
+      member: `${viewerId}|${name}`,
+    });
+  }
+  async getPresence(): Promise<{ count: number; sample: ViewerSample[] }> {
+    const cutoff = Date.now() - PRESENCE_TTL_MS;
+    await this.redis.zremrangebyscore(PRESENCE_KEY, 0, cutoff);
+    const [count, members] = await Promise.all([
+      this.redis.zcard(PRESENCE_KEY),
+      this.redis.zrange<string[]>(PRESENCE_KEY, 0, 7),
+    ]);
+    return { count, sample: members.map(parseViewerMember) };
+  }
+  async pushActivity(item: ActivityItem): Promise<void> {
+    await this.redis.lpush(ACTIVITY_KEY, JSON.stringify(item));
+    await this.redis.ltrim(ACTIVITY_KEY, 0, ACTIVITY_MAX - 1);
+  }
+  async getActivity(): Promise<ActivityItem[]> {
+    const raw = await this.redis.lrange<ActivityItem>(ACTIVITY_KEY, 0, ACTIVITY_MAX - 1);
+    return raw.map((a) => (typeof a === "string" ? JSON.parse(a) : a));
+  }
+}
+
+function parseViewerMember(member: string): ViewerSample {
+  const sep = member.indexOf("|");
+  return sep === -1
+    ? { id: member, name: "viewer" }
+    : { id: member.slice(0, sep), name: member.slice(sep + 1) };
 }
 
 class MemoryStore implements Store {
@@ -125,6 +167,28 @@ class MemoryStore implements Store {
   async getFlag(key: string) {
     const expires = this.flags.get(key);
     return Boolean(expires && expires > Date.now());
+  }
+  private presence = new Map<string, { name: string; ts: number }>();
+  private activity: ActivityItem[] = [];
+  async touchPresence(viewerId: string, name: string) {
+    this.presence.set(viewerId, { name, ts: Date.now() });
+  }
+  async getPresence() {
+    const cutoff = Date.now() - PRESENCE_TTL_MS;
+    for (const [id, v] of this.presence) {
+      if (v.ts < cutoff) this.presence.delete(id);
+    }
+    const sample = [...this.presence.entries()]
+      .slice(0, 8)
+      .map(([id, v]) => ({ id, name: v.name }));
+    return { count: this.presence.size, sample };
+  }
+  async pushActivity(item: ActivityItem) {
+    this.activity.unshift(item);
+    this.activity.length = Math.min(this.activity.length, ACTIVITY_MAX);
+  }
+  async getActivity() {
+    return [...this.activity];
   }
 }
 

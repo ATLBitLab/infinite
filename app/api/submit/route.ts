@@ -1,9 +1,10 @@
 import { randomUUID } from "crypto";
 import { moderateAndExpand } from "@/lib/llm";
 import { createInvoice } from "@/lib/voltage";
-import { submissionPriceSats } from "@/lib/price";
+import { clampDuration, submissionPriceSats } from "@/lib/price";
 import { getStore, persistenceMisconfigured } from "@/lib/store";
 import { FAL_LOCK_FLAG } from "@/lib/fal";
+import { config } from "@/lib/config";
 import type { Job } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -28,7 +29,7 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
-  let body: { idea?: string; credit?: string };
+  let body: { idea?: string; credit?: string; duration?: number };
   try {
     body = await request.json();
   } catch {
@@ -37,17 +38,19 @@ export async function POST(request: Request) {
 
   const idea = (body.idea ?? "").trim().slice(0, 500);
   const credit = (body.credit ?? "").trim().slice(0, 50) || undefined;
+  // Server-side clamp: the client's slider is presentation only.
+  const duration = clampDuration(body.duration ?? config.clipDuration);
   if (idea.length < 5) {
     return Response.json({ error: "Give us a little more than that." }, { status: 400 });
   }
 
   try {
-    const moderation = await moderateAndExpand(idea);
+    const moderation = await moderateAndExpand(idea, duration);
     if (!moderation.allowed) {
       return Response.json({ rejected: true, reason: moderation.reason }, { status: 200 });
     }
 
-    const sats = await submissionPriceSats();
+    const sats = await submissionPriceSats(duration);
     const jobId = randomUUID();
     // Use one UUID for both records so detail.data.id from a webhook resolves
     // directly to this job. Persist before the create request: generated can
@@ -61,6 +64,7 @@ export async function POST(request: Request) {
       credit,
       paymentId: jobId,
       sats,
+      duration,
       createdAt: Date.now(),
     };
     await store.putJob(job);

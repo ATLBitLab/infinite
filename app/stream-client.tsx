@@ -12,6 +12,8 @@ import {
 
 interface NowResponse extends NowPlaying {
   priceSats: number;
+  priceTable?: Record<number, number>;
+  durations?: { min: number; max: number };
   mockMode: { fal: boolean; llm: boolean; voltage: boolean };
   store: "redis" | "memory";
   falPaused?: boolean;
@@ -22,7 +24,7 @@ interface NowResponse extends NowPlaying {
 
 type ModalState =
   | { phase: "closed" }
-  | { phase: "compose"; idea: string; credit: string; busy: boolean; error?: string }
+  | { phase: "compose"; idea: string; credit: string; duration: number; busy: boolean; error?: string }
   | { phase: "rejected"; reason: string }
   | { phase: "invoice_pending"; jobId: string; title: string; sats: number }
   | { phase: "invoice"; jobId: string; title: string; bolt11: string; sats: number }
@@ -280,14 +282,26 @@ export default function StreamClient() {
       <div className="absolute bottom-0 left-0 right-0 flex items-center gap-3 border-t-4 border-mustard bg-panel px-4 py-3">
         <button
           onClick={() =>
-            setModal({ phase: "compose", idea: "", credit: "", busy: false })
+            setModal({
+              phase: "compose",
+              idea: "",
+              credit: "",
+              duration: now?.durations?.max ?? 15,
+              busy: false,
+            })
           }
           disabled={Boolean(now?.falPaused)}
           className="shrink-0 rounded-sm border-2 border-orange bg-orange px-4 py-2 font-[family-name:var(--font-display)] text-sm text-void hover:bg-mustard hover:border-mustard disabled:opacity-50 disabled:hover:bg-orange disabled:hover:border-orange"
         >
           {now?.falPaused
             ? "REFUELING… BACK SOON"
-            : `ADD TO STREAM · ${now ? fmtBtc(now.priceSats) : "…"}`}
+            : `ADD TO STREAM · ${
+                now?.priceTable && now.durations
+                  ? `from ${fmtBtc(now.priceTable[now.durations.min])}`
+                  : now
+                    ? fmtBtc(now.priceSats)
+                    : "…"
+              }`}
         </button>
         <div className="relative flex-1 overflow-hidden whitespace-nowrap text-sm text-teal">
           <div className="ticker inline-block">
@@ -486,6 +500,7 @@ function SubmitModal({
         body: JSON.stringify({
           idea: modal.idea,
           credit: modal.credit || identity?.name || "",
+          duration: modal.duration,
         }),
       });
       const data = await res.json();
@@ -526,6 +541,7 @@ function SubmitModal({
         phase: "compose",
         idea: data.idea ?? "",
         credit: modal.credit,
+        duration: modal.duration,
         busy: false,
         error: data.error,
       });
@@ -570,6 +586,33 @@ function SubmitModal({
               maxLength={50}
               className="w-full border-2 border-teal/60 bg-void p-2 text-sm outline-none focus:border-teal"
             />
+            <div className="border-2 border-teal/60 bg-void p-2">
+              <div className="mb-1 flex items-baseline justify-between text-xs">
+                <span className="font-bold tracking-widest text-teal">
+                  LENGTH: {modal.duration}s
+                </span>
+                <span className="text-cream/70">
+                  {now?.priceTable?.[modal.duration]
+                    ? fmtBtc(now.priceTable[modal.duration])
+                    : "…"}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={now?.durations?.min ?? 5}
+                max={now?.durations?.max ?? 15}
+                step={1}
+                value={modal.duration}
+                onChange={(e) =>
+                  setModal({ ...modal, duration: Number(e.target.value) })
+                }
+                className="w-full accent-[#ff6b35]"
+              />
+              <div className="flex justify-between text-[10px] text-cream/50">
+                <span>{now?.durations?.min ?? 5}s · quick gag</span>
+                <span>{now?.durations?.max ?? 15}s · full bit</span>
+              </div>
+            </div>
             {modal.error && <div className="text-sm text-danger">{modal.error}</div>}
             <div className="flex gap-2">
               <button
@@ -584,7 +627,15 @@ function SubmitModal({
                 disabled={modal.busy || modal.idea.trim().length < 5}
                 className="flex-1 border-2 border-orange bg-orange px-3 py-2 text-xs font-bold tracking-wider text-void hover:bg-mustard hover:border-mustard disabled:opacity-40"
               >
-                {modal.busy ? "CHECKING…" : `PAY ${now ? fmtBtc(now.priceSats) : "…"}`}
+                {modal.busy
+                  ? "CHECKING…"
+                  : `PAY ${
+                      now?.priceTable?.[modal.duration]
+                        ? fmtBtc(now.priceTable[modal.duration])
+                        : now
+                          ? fmtBtc(now.priceSats)
+                          : "…"
+                    }`}
               </button>
             </div>
           </div>
@@ -594,7 +645,15 @@ function SubmitModal({
           <div className="flex flex-col gap-3">
             <p className="text-sm">{modal.reason}</p>
             <button
-              onClick={() => setModal({ phase: "compose", idea: "", credit: "", busy: false })}
+              onClick={() =>
+                setModal({
+                  phase: "compose",
+                  idea: "",
+                  credit: "",
+                  duration: now?.durations?.max ?? 15,
+                  busy: false,
+                })
+              }
               className="border-2 border-teal px-3 py-2 text-xs font-bold tracking-wider text-teal hover:bg-teal hover:text-void"
             >
               TRY ANOTHER IDEA

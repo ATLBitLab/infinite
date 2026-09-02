@@ -5,7 +5,8 @@ export const config = {
   // fal.ai — video generation
   falKey: process.env.FAL_KEY ?? "",
   falModel: process.env.FAL_MODEL ?? "minimax/h3-max/text-to-video",
-  clipDuration: intEnv("CLIP_DURATION", 15), // seconds, 5–15
+  clipDuration: intEnv("CLIP_DURATION", 15), // max seconds, 5–15
+  clipMinDuration: intEnv("CLIP_MIN_DURATION", 5), // shortest purchasable clip
   clipResolution: (process.env.CLIP_RESOLUTION ?? "768P") as "480P" | "768P",
 
   // Anthropic — ideas, moderation, prompt expansion

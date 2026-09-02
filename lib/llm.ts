@@ -49,7 +49,10 @@ function parseJson<T>(raw: string): T {
 }
 
 /** Moderate a submitted idea and expand it into a video prompt in one call. */
-export async function moderateAndExpand(idea: string): Promise<ModerationResult> {
+export async function moderateAndExpand(
+  idea: string,
+  durationSec: number = config.clipDuration,
+): Promise<ModerationResult> {
   if (mockMode.llm) return mockModerate(idea);
 
   const system = `${VIBE}
@@ -62,7 +65,7 @@ Respond with ONLY a JSON object:
   "allowed": boolean,       // false for mean-spirited, hateful, harassing, sexual, gory, illegal, or targeted-at-a-private-person content
   "reason": string,         // one playful sentence shown to the submitter (esp. when rejected)
   "title": string,          // punchy on-screen title, max 8 words
-  "videoPrompt": string     // 2-4 sentences describing ONE self-contained comedic scene for a ${config.clipDuration}-second animated clip: characters, setting, action, a visual punchline. Include any short spoken line or sound gag. Do not describe the art style; that is appended separately.
+  "videoPrompt": string     // 2-4 sentences describing ONE self-contained comedic scene for a ${durationSec}-second animated clip: characters, setting, action, a visual punchline. Pace it for ${durationSec} seconds. Include any short spoken line or sound gag. Do not describe the art style; that is appended separately.
 }`;
 
   const result = await callClaude(system, `Viewer idea: ${JSON.stringify(idea)}`);

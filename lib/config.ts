@@ -28,6 +28,10 @@ export const config = {
   // House content (auto-generated filler) budget guardrails.
   maxDailyHouseClips: intEnv("MAX_DAILY_HOUSE_CLIPS", 12),
   minLibraryClips: intEnv("MIN_LIBRARY_CLIPS", 3),
+  // Keep the channel fresh: generate a house clip when the newest clip is
+  // older than this many hours AND someone is watching. 0 disables (bootstrap
+  // only). Daily budget cap still applies.
+  houseFreshHours: floatEnv("HOUSE_FRESH_HOURS", 4),
 
   // Upstash Redis (falls back to in-memory for local dev)
   redisUrl: process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL ?? "",

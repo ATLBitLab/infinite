@@ -20,6 +20,14 @@ export async function GET(
       if (payment.paid) {
         job.status = "paid";
         await store.putJob(job);
+        // Feed the live activity toasts (fire-and-forget).
+        await store.pushActivity({
+          id: job.id,
+          type: "submission",
+          name: job.credit || "an anonymous weirdo",
+          title: job.title,
+          ts: Date.now(),
+        });
       } else if (payment.status === "expired" || payment.status === "failed") {
         job.status = "failed";
         job.error = `payment ${payment.status}`;

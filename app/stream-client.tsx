@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import type { NowPlaying } from "@/lib/types";
+import type { ActivityItem, NowPlaying, ViewerSample } from "@/lib/types";
+import {
+  broadcastPurchase,
+  hueForId,
+  loadIdentity,
+  type Identity,
+} from "./identity";
 
 interface NowResponse extends NowPlaying {
   priceSats: number;
@@ -10,6 +16,8 @@ interface NowResponse extends NowPlaying {
   store: "redis" | "memory";
   falPaused?: boolean;
   configError?: string;
+  viewers?: { count: number; sample: ViewerSample[] };
+  activity?: ActivityItem[];
 }
 
 type ModalState =
@@ -30,16 +38,44 @@ export default function StreamClient() {
   const [now, setNow] = useState<NowResponse | null>(null);
   const [soundOn, setSoundOn] = useState(false);
   const [modal, setModal] = useState<ModalState>({ phase: "closed" });
+  const [identity, setIdentity] = useState<Identity | null>(null);
+  const [toasts, setToasts] = useState<ActivityItem[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const currentClipId = useRef<string | null>(null);
   const lastBootstrap = useRef(0);
   const lastDrain = useRef(0);
+  const identityRef = useRef<Identity | null>(null);
+  const seenActivity = useRef<Set<string> | null>(null);
 
   const fetchNow = useCallback(async () => {
     try {
-      const res = await fetch("/api/now");
+      const me = identityRef.current;
+      const qs = me
+        ? `?vid=${me.shortId}&vn=${encodeURIComponent(me.name)}`
+        : "";
+      const res = await fetch(`/api/now${qs}`);
       const data = (await res.json()) as NowResponse;
       setNow(data);
+
+      // Toast activity that arrived since our last poll. The first poll
+      // seeds the seen-set silently so we don't replay history on load.
+      const items = data.activity ?? [];
+      if (seenActivity.current === null) {
+        seenActivity.current = new Set(items.map((a) => a.id));
+      } else {
+        const seen = seenActivity.current;
+        const fresh = items.filter((a) => !seen.has(a.id));
+        for (const a of fresh) seen.add(a.id);
+        if (fresh.length) {
+          setToasts((t) => [...t, ...fresh].slice(-4));
+          for (const a of fresh) {
+            setTimeout(
+              () => setToasts((t) => t.filter((x) => x.id !== a.id)),
+              7000,
+            );
+          }
+        }
+      }
 
       // Opportunistically retry deferred paid jobs (cheap no-op when empty).
       if (Date.now() - lastDrain.current > 5 * 60_000) {
@@ -66,6 +102,10 @@ export default function StreamClient() {
   }, []);
 
   useEffect(() => {
+    // Mint/load the browser's nostr identity before the first heartbeat.
+    const me = loadIdentity();
+    identityRef.current = me;
+    setIdentity(me);
     fetchNow();
     const t = setInterval(fetchNow, POLL_MS);
     return () => clearInterval(t);
@@ -124,12 +164,42 @@ export default function StreamClient() {
             <span className="blink">●</span> {now?.rerun ? "RERUN" : "ON AIR"}
           </span>
         </div>
-        <button
-          onClick={() => setSoundOn((s) => !s)}
-          className="rounded-sm border-2 border-cream/60 bg-black/60 px-3 py-1 text-xs font-bold tracking-widest hover:border-teal hover:text-teal"
-        >
-          {soundOn ? "SOUND: ON" : "SOUND: OFF"}
-        </button>
+        <div className="flex items-center gap-3">
+          {now?.viewers && now.viewers.count > 0 && (
+            <div
+              className="flex items-center gap-2 rounded-sm border-2 border-cream/30 bg-black/60 px-2 py-1"
+              title={now.viewers.sample.map((v) => v.name).join(", ")}
+            >
+              <div className="flex -space-x-2">
+                {now.viewers.sample.slice(0, 5).map((v) => (
+                  <ViewerAvatar key={v.id} viewer={v} />
+                ))}
+              </div>
+              <span className="text-xs font-bold tracking-wider text-cream/80">
+                {now.viewers.count} watching
+              </span>
+            </div>
+          )}
+          <button
+            onClick={() => setSoundOn((s) => !s)}
+            className="rounded-sm border-2 border-cream/60 bg-black/60 px-3 py-1 text-xs font-bold tracking-widest hover:border-teal hover:text-teal"
+          >
+            {soundOn ? "SOUND: ON" : "SOUND: OFF"}
+          </button>
+        </div>
+      </div>
+
+      {/* ---- activity toasts ---- */}
+      <div className="pointer-events-none absolute bottom-20 right-4 z-20 flex flex-col items-end gap-2">
+        {toasts.map((a) => (
+          <div
+            key={a.id}
+            className="max-w-xs border-2 border-teal bg-black/85 px-3 py-2 text-sm shadow-[4px_4px_0_#e63946]"
+          >
+            🎬 <span className="text-mustard">{a.name}</span> added{" "}
+            <span className="text-teal">“{a.title}”</span>
+          </div>
+        ))}
       </div>
 
       {/* ---- config error banner ---- */}
@@ -204,9 +274,34 @@ export default function StreamClient() {
       </div>
 
       {modal.phase !== "closed" && (
-        <SubmitModal modal={modal} setModal={setModal} now={now} onScheduled={fetchNow} />
+        <SubmitModal
+          modal={modal}
+          setModal={setModal}
+          now={now}
+          identity={identity}
+          onScheduled={fetchNow}
+        />
       )}
     </main>
+  );
+}
+
+function ViewerAvatar({ viewer }: { viewer: ViewerSample }) {
+  const hue = hueForId(viewer.id);
+  const initials = viewer.name
+    .split(/\s+/)
+    .map((w) => w[0] ?? "")
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+  return (
+    <span
+      className="flex h-6 w-6 items-center justify-center rounded-full border-2 border-void text-[9px] font-bold text-void"
+      style={{ backgroundColor: `hsl(${hue} 70% 60%)` }}
+      title={viewer.name}
+    >
+      {initials}
+    </span>
   );
 }
 
@@ -226,11 +321,13 @@ function SubmitModal({
   modal,
   setModal,
   now,
+  identity,
   onScheduled,
 }: {
   modal: ModalState;
   setModal: (m: ModalState) => void;
   now: NowResponse | null;
+  identity: Identity | null;
   onScheduled: () => void;
 }) {
   // Poll payment status while an invoice is showing.
@@ -243,6 +340,8 @@ function SubmitModal({
         const data = await res.json();
         if (data.status === "paid" || data.status === "done" || data.status === "generating") {
           clearInterval(t);
+          // Payment confirmed: shout it to nostr with our browser identity.
+          broadcastPurchase(title);
           setModal({ phase: "generating", jobId, title });
         }
         if (data.status === "failed") {
@@ -305,7 +404,10 @@ function SubmitModal({
       const res = await fetch("/api/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idea: modal.idea, credit: modal.credit }),
+        body: JSON.stringify({
+          idea: modal.idea,
+          credit: modal.credit || identity?.name || "",
+        }),
       });
       const data = await res.json();
       if (data.rejected) {
@@ -376,7 +478,7 @@ function SubmitModal({
             <input
               value={modal.credit}
               onChange={(e) => setModal({ ...modal, credit: e.target.value })}
-              placeholder="credit (name / npub, optional)"
+              placeholder={`credit (default: ${identity?.name ?? "anonymous"})`}
               maxLength={50}
               className="w-full border-2 border-teal/60 bg-void p-2 text-sm outline-none focus:border-teal"
             />

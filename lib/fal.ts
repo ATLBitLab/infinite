@@ -10,6 +10,19 @@ export interface GeneratedVideo {
   duration: number;
 }
 
+/** Store flag key: set when fal reports a balance lock, so submissions pause
+ * instead of taking sats for clips that can't render. */
+export const FAL_LOCK_FLAG = "fal-locked";
+export const FAL_LOCK_TTL = 10 * 60; // seconds
+
+/** fal 403s with "User is locked. Reason: Exhausted balance." when the
+ * account runs dry. Detect it so we can pause paid submissions. */
+export function isBalanceLock(err: unknown): boolean {
+  const e = err as { status?: number; body?: { detail?: unknown } };
+  const detail = typeof e?.body?.detail === "string" ? e.body.detail : "";
+  return e?.status === 403 && /locked|balance/i.test(detail);
+}
+
 let configured = false;
 function ensureConfigured() {
   if (!configured) {

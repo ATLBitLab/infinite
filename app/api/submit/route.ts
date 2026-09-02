@@ -3,6 +3,7 @@ import { moderateAndExpand } from "@/lib/llm";
 import { createInvoice } from "@/lib/voltage";
 import { submissionPriceSats } from "@/lib/price";
 import { getStore, persistenceMisconfigured } from "@/lib/store";
+import { FAL_LOCK_FLAG } from "@/lib/fal";
 import type { Job } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +16,13 @@ export async function POST(request: Request) {
   if (persistenceMisconfigured()) {
     return Response.json(
       { error: "The station is misconfigured (no Redis). Submissions are paused." },
+      { status: 503 },
+    );
+  }
+  // Never take someone's sats while the render farm is balance-locked.
+  if (await getStore().getFlag(FAL_LOCK_FLAG)) {
+    return Response.json(
+      { error: "The render farm is refueling — submissions are paused for a few minutes. Your sats are safe in your wallet where they belong." },
       { status: 503 },
     );
   }

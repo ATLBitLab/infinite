@@ -36,6 +36,8 @@ export interface Job {
   paymentId?: string;
   clipId?: string;
   error?: string;
+  /** Failed generation attempts so far (job stays retryable until capped). */
+  retries?: number;
   createdAt: number;
 }
 

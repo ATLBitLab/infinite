@@ -8,6 +8,7 @@ interface NowResponse extends NowPlaying {
   priceSats: number;
   mockMode: { fal: boolean; llm: boolean; voltage: boolean };
   store: "redis" | "memory";
+  falPaused?: boolean;
   configError?: string;
 }
 
@@ -17,6 +18,7 @@ type ModalState =
   | { phase: "rejected"; reason: string }
   | { phase: "invoice"; jobId: string; title: string; bolt11: string; sats: number }
   | { phase: "generating"; jobId: string; title: string }
+  | { phase: "deferred"; title: string }
   | { phase: "done"; title: string };
 
 const POLL_MS = 8000;
@@ -31,12 +33,23 @@ export default function StreamClient() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const currentClipId = useRef<string | null>(null);
   const lastBootstrap = useRef(0);
+  const lastDrain = useRef(0);
 
   const fetchNow = useCallback(async () => {
     try {
       const res = await fetch("/api/now");
       const data = (await res.json()) as NowResponse;
       setNow(data);
+
+      // Opportunistically retry deferred paid jobs (cheap no-op when empty).
+      if (Date.now() - lastDrain.current > 5 * 60_000) {
+        lastDrain.current = Date.now();
+        fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ drain: true }),
+        }).catch(() => {});
+      }
 
       // Bootstrap: empty/thin library → ask the server to write a house clip.
       if (data.needsBootstrap && Date.now() - lastBootstrap.current > 60_000) {
@@ -151,9 +164,12 @@ export default function StreamClient() {
           onClick={() =>
             setModal({ phase: "compose", idea: "", credit: "", busy: false })
           }
-          className="shrink-0 rounded-sm border-2 border-orange bg-orange px-4 py-2 font-[family-name:var(--font-display)] text-sm text-void hover:bg-mustard hover:border-mustard"
+          disabled={Boolean(now?.falPaused)}
+          className="shrink-0 rounded-sm border-2 border-orange bg-orange px-4 py-2 font-[family-name:var(--font-display)] text-sm text-void hover:bg-mustard hover:border-mustard disabled:opacity-50 disabled:hover:bg-orange disabled:hover:border-orange"
         >
-          ADD TO STREAM · {now ? fmtBtc(now.priceSats) : "…"}
+          {now?.falPaused
+            ? "REFUELING… BACK SOON"
+            : `ADD TO STREAM · ${now ? fmtBtc(now.priceSats) : "…"}`}
         </button>
         <div className="relative flex-1 overflow-hidden whitespace-nowrap text-sm text-teal">
           <div className="ticker inline-block">
@@ -257,6 +273,8 @@ function SubmitModal({
         if (data.status === "done") {
           onScheduled();
           setModal({ phase: "done", title });
+        } else if (data.status === "deferred") {
+          setModal({ phase: "deferred", title });
         } else if (data.status === "generating") {
           // Another instance is on it; poll until done.
           const poll = setInterval(async () => {
@@ -429,6 +447,26 @@ function SubmitModal({
               <span className="text-mustard">“{modal.title}”</span> frame by
               frame. ~15 seconds.
             </p>
+          </div>
+        )}
+
+        {modal.phase === "deferred" && (
+          <div className="flex flex-col items-center gap-3 py-2">
+            <div className="font-[family-name:var(--font-display)] text-lg text-mustard">
+              QUEUED!
+            </div>
+            <p className="text-center text-sm opacity-80">
+              Your payment landed and{" "}
+              <span className="text-mustard">“{modal.title}”</span> is locked in.
+              The render farm hit a hiccup, so your cartoon is queued and will
+              air automatically once it recovers — no extra sats needed.
+            </p>
+            <button
+              onClick={() => setModal({ phase: "closed" })}
+              className="border-2 border-orange bg-orange px-4 py-2 text-xs font-bold tracking-wider text-void hover:bg-mustard hover:border-mustard"
+            >
+              BACK TO THE STREAM
+            </button>
           </div>
         )}
 

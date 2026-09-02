@@ -101,9 +101,12 @@ export async function extractLastFrame(videoUrl: string): Promise<string> {
     input: { video_url: videoUrl, frame_type: "last" },
     logs: false,
   });
-  const data = result.data as { image?: { url?: string }; url?: string };
-  const url = data?.image?.url ?? data?.url;
-  if (!url) throw new Error("fal extract-frame returned no image url");
+  // Output schema (fal OpenAPI): { images: [{ url }] } — an array, even for one frame.
+  const data = result.data as { images?: { url?: string }[]; image?: { url?: string } };
+  const url = data?.images?.[0]?.url ?? data?.image?.url;
+  if (!url) {
+    throw new Error(`fal extract-frame returned no image url: ${JSON.stringify(result.data).slice(0, 300)}`);
+  }
   return url;
 }
 

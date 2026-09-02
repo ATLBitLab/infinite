@@ -54,8 +54,75 @@ live service-by-service (each one falls back to mock independently).
 1. Import the repo into Vercel.
 2. Add an Upstash Redis integration (or set `UPSTASH_REDIS_REST_URL/TOKEN`) —
    required in prod; the in-memory store is dev-only.
-3. Set `FAL_KEY`, `ANTHROPIC_API_KEY`, and the four `VOLTAGE_*` vars.
+3. Set `FAL_KEY`, `ANTHROPIC_API_KEY`, the four Voltage account variables,
+   `CRON_SECRET`, and `VOLTAGE_WEBHOOK_ID` / `VOLTAGE_WEBHOOK_SECRET` as
+   described below.
 4. Deploy. The generate route sets `maxDuration = 300`.
+
+## Voltage webhook
+
+Invoice generation and payment completion use one environment-level webhook.
+Create it once after the site has a public HTTPS URL:
+
+```bash
+export INFINITE_URL="https://your-deployment.example"
+export VOLTAGE_WEBHOOK_ID="$(uuidgen)"
+export VOLTAGE_API_URL="${VOLTAGE_API_URL:-https://voltageapi.com/v1}"
+
+curl --fail-with-body \
+  --request POST \
+  --header "x-api-key: $VOLTAGE_API_KEY" \
+  --header "Content-Type: application/json" \
+  "$VOLTAGE_API_URL/organizations/$VOLTAGE_ORG_ID/environments/$VOLTAGE_ENV_ID/webhooks" \
+  --data "{
+    \"id\": \"$VOLTAGE_WEBHOOK_ID\",
+    \"url\": \"$INFINITE_URL/api/voltage/webhook\",
+    \"name\": \"INFINITE payments\",
+    \"events\": [
+      {\"receive\": \"generated\"},
+      {\"receive\": \"completed\"},
+      {\"receive\": \"expired\"},
+      {\"receive\": \"failed\"}
+    ]
+  }"
+```
+
+The `202` response contains a one-time `shared_secret`. Save its `id` as
+`VOLTAGE_WEBHOOK_ID` and `shared_secret` as `VOLTAGE_WEBHOOK_SECRET` in the
+deployment environment, then redeploy. Point production Voltage directly at
+the deployed endpoint; deliveries have a two-second response deadline.
+
+For local payload inspection, a Smee channel can forward to the route:
+
+```bash
+npx smee-client \
+  --url https://smee.io/YOUR_CHANNEL \
+  --target http://localhost:3000/api/voltage/webhook
+```
+
+Register the Smee URL on a development Voltage environment only. Smee is not a
+production relay, and JSON reserialization may prevent raw-body signature
+verification; use a deployed preview or raw-byte-preserving HTTPS tunnel when
+testing signatures end to end.
+
+### Payment reconciliation
+
+The signed Voltage webhook is the fast path. `receive.generated` writes the
+BOLT11 directly to Redis, `receive.completed` records payment, and the browser
+observes either update through its short local poll without waiting on the
+Payments API.
+
+Reconciliation is only the recovery path. `vercel.json` invokes
+`/api/cron/reconcile-payments` once per minute to repair any invoice or
+terminal state missed by a webhook. Set a random `CRON_SECRET` of at least 16
+characters in Vercel; Vercel supplies it as the route's bearer token
+automatically.
+
+The worker claims at most 25 pending jobs per run, checks five concurrently,
+and rotates unresolved jobs to prevent one stale payment from blocking newer
+ones. Per-minute cron schedules require a Vercel Pro or Enterprise project; on
+Hobby, invoke the same authenticated route from an external scheduler or use a
+schedule allowed by that plan.
 
 ## Roadmap
 

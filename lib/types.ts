@@ -34,17 +34,16 @@ export interface Job {
   videoPrompt: string;
   credit?: string;
   paymentId?: string;
+  /** Requested amount. Persisted before invoice creation so webhook updates
+   * can complete the job without relying on the Payments API read model. */
+  sats?: number;
+  /** BOLT11 populated by the receive.generated webhook (or reconciliation). */
+  bolt11?: string;
   clipId?: string;
   error?: string;
   /** Failed generation attempts so far (job stays retryable until capped). */
   retries?: number;
   createdAt: number;
-}
-
-export interface InvoiceInfo {
-  paymentId: string;
-  bolt11: string;
-  sats: number;
 }
 
 export interface ViewerSample {

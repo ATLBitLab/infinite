@@ -1,6 +1,6 @@
 import { nowPlaying } from "@/lib/stream";
-import { submissionPriceSats } from "@/lib/price";
-import { mockMode } from "@/lib/config";
+import { priceTableSats, submissionPriceSats } from "@/lib/price";
+import { config, mockMode } from "@/lib/config";
 import { getStore, persistenceMisconfigured, usingRedis } from "@/lib/store";
 import { FAL_LOCK_FLAG } from "@/lib/fal";
 
@@ -18,9 +18,10 @@ export async function GET(request: Request) {
     .slice(0, 30);
   if (vid) await store.touchPresence(vid, vn || "viewer");
 
-  const [now, priceSats, falLock, viewers, activity] = await Promise.all([
+  const [now, priceSats, priceTable, falLock, viewers, activity] = await Promise.all([
     nowPlaying(),
     submissionPriceSats(),
+    priceTableSats(),
     store.getFlagInfo(FAL_LOCK_FLAG),
     store.getPresence(),
     store.getActivity(),
@@ -32,6 +33,8 @@ export async function GET(request: Request) {
     // Never let clients trigger paid generations into a store that forgets.
     needsBootstrap: now.needsBootstrap && !misconfigured,
     priceSats,
+    priceTable,
+    durations: { min: config.clipMinDuration, max: config.clipDuration },
     mockMode,
     falPaused,
     falPausedReason: falLock?.reason || undefined,

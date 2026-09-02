@@ -38,14 +38,17 @@ function ensureConfigured() {
   }
 }
 
-export async function generateVideo(prompt: string): Promise<GeneratedVideo> {
+export async function generateVideo(
+  prompt: string,
+  durationSec: number = config.clipDuration,
+): Promise<GeneratedVideo> {
   if (mockMode.fal) return mockVideo();
 
   ensureConfigured();
   const result = await fal.subscribe(config.falModel, {
     input: {
       prompt,
-      duration: config.clipDuration,
+      duration: durationSec,
       resolution: config.clipResolution,
       aspect_ratio: "16:9",
       prompt_expansion_mode: "balanced",
@@ -57,7 +60,7 @@ export async function generateVideo(prompt: string): Promise<GeneratedVideo> {
   if (!data?.video?.url) {
     throw new Error("fal returned no video url");
   }
-  return { url: data.video.url, duration: config.clipDuration };
+  return { url: data.video.url, duration: durationSec };
 }
 
 // ---------- mock fallback ----------

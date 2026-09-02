@@ -26,10 +26,34 @@ async function btcUsd(): Promise<number> {
   return cached?.rate ?? FALLBACK_BTC_USD;
 }
 
-export async function submissionPriceSats(): Promise<number> {
-  if (config.priceSats > 0) return config.priceSats;
-  const rate = await btcUsd();
-  const sats = (config.priceUsd / rate) * 100_000_000;
-  // Round up to the nearest 100 sats so the price looks intentional.
+/** Price for a clip of the given duration. PRICE_SATS / PRICE_USD define the
+ * price of a full-length clip (CLIP_DURATION); shorter clips scale linearly
+ * per second. Rounded up to the nearest 100 sats with a floor of 100. */
+export async function submissionPriceSats(
+  durationSec: number = config.clipDuration,
+): Promise<number> {
+  const fraction = clampDuration(durationSec) / config.clipDuration;
+  let sats: number;
+  if (config.priceSats > 0) {
+    sats = config.priceSats * fraction;
+  } else {
+    const rate = await btcUsd();
+    sats = ((config.priceUsd * fraction) / rate) * 100_000_000;
+  }
   return Math.max(100, Math.ceil(sats / 100) * 100);
+}
+
+export function clampDuration(durationSec: number): number {
+  const d = Math.round(Number(durationSec));
+  if (!Number.isFinite(d)) return config.clipDuration;
+  return Math.min(config.clipDuration, Math.max(config.clipMinDuration, d));
+}
+
+/** Exact sat price for every purchasable duration, for UI display. */
+export async function priceTableSats(): Promise<Record<number, number>> {
+  const table: Record<number, number> = {};
+  for (let d = config.clipMinDuration; d <= config.clipDuration; d++) {
+    table[d] = await submissionPriceSats(d);
+  }
+  return table;
 }

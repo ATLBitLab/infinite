@@ -59,7 +59,7 @@ async function runGeneration(job: Job) {
   job.status = "generating";
   await store.putJob(job);
 
-  const video = await generateVideo(job.videoPrompt);
+  const video = await generateVideo(job.videoPrompt, job.duration);
   const clip = await scheduleClip({
     id: randomUUID(),
     kind: "paid",

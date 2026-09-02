@@ -109,3 +109,10 @@ export function getStore(): Store {
 export function usingRedis(): boolean {
   return Boolean(config.redisUrl && config.redisToken);
 }
+
+/** True when running on real deployed infra where the in-memory store is
+ * unusable (each serverless instance has its own memory, so writes vanish). */
+export function persistenceMisconfigured(): boolean {
+  const deployed = Boolean(process.env.VERCEL) || process.env.NODE_ENV === "production";
+  return deployed && !usingRedis();
+}

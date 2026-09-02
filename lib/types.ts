@@ -43,6 +43,9 @@ export interface Job {
   scenePrompts?: string[];
   /** Seconds per scene, parallel to scenePrompts. */
   segmentDurations?: number[];
+  /** Rendered scene URLs so far, so a retry resumes instead of re-paying
+   * for scenes that already rendered. */
+  sceneUrls?: string[];
   /** BOLT11 populated by the receive.generated webhook (or reconciliation). */
   bolt11?: string;
   clipId?: string;

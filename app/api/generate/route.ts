@@ -70,16 +70,22 @@ async function runGeneration(job: Job) {
     ? job.segmentDurations
     : [job.duration ?? config.clipDuration];
 
-  const sceneUrls: string[] = [];
-  let lastFrameUrl: string | null = null;
+  // Resume from any scenes a previous attempt already rendered: each scene
+  // costs real money, and a failure in extract/merge must not re-bill them.
+  const sceneUrls: string[] = (job.sceneUrls ?? []).slice(0, prompts.length);
   for (let i = 0; i < prompts.length; i++) {
-    const video = lastFrameUrl
-      ? await generateVideoFromImage(prompts[i], lastFrameUrl, lengths[i])
-      : await generateVideo(prompts[i], lengths[i]);
-    sceneUrls.push(video.url);
-    if (i < prompts.length - 1) {
-      lastFrameUrl = await extractLastFrame(video.url);
-    }
+    if (sceneUrls[i]) continue;
+    const video =
+      i === 0
+        ? await generateVideo(prompts[0], lengths[0])
+        : await generateVideoFromImage(
+            prompts[i],
+            await extractLastFrame(sceneUrls[i - 1]),
+            lengths[i],
+          );
+    sceneUrls[i] = video.url;
+    job.sceneUrls = sceneUrls;
+    await store.putJob(job);
   }
   const videoUrl = await mergeVideos(sceneUrls);
   const totalDuration = lengths.reduce((sum, s) => sum + s, 0);

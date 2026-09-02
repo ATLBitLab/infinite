@@ -16,6 +16,12 @@ interface Store {
   /** Simple lock with TTL. Returns true if acquired. */
   acquireLock(key: string, ttlSeconds: number): Promise<boolean>;
   releaseLock(key: string): Promise<void>;
+  /** Queue of paid jobs whose generation failed and should be retried. */
+  pushDeferred(jobId: string): Promise<void>;
+  popDeferred(): Promise<string | null>;
+  /** TTL flag, e.g. "fal is balance-locked, pause submissions". */
+  setFlag(key: string, ttlSeconds: number): Promise<void>;
+  getFlag(key: string): Promise<boolean>;
 }
 
 const CLIPS_KEY = "infinite:clips";
@@ -59,6 +65,18 @@ class RedisStore implements Store {
   async releaseLock(key: string): Promise<void> {
     await this.redis.del(`infinite:lock:${key}`);
   }
+  async pushDeferred(jobId: string): Promise<void> {
+    await this.redis.rpush("infinite:deferred", jobId);
+  }
+  async popDeferred(): Promise<string | null> {
+    return await this.redis.lpop<string>("infinite:deferred");
+  }
+  async setFlag(key: string, ttlSeconds: number): Promise<void> {
+    await this.redis.set(`infinite:flag:${key}`, "1", { ex: ttlSeconds });
+  }
+  async getFlag(key: string): Promise<boolean> {
+    return Boolean(await this.redis.get(`infinite:flag:${key}`));
+  }
 }
 
 class MemoryStore implements Store {
@@ -92,6 +110,21 @@ class MemoryStore implements Store {
   }
   async releaseLock(key: string) {
     this.locks.delete(key);
+  }
+  private deferred: string[] = [];
+  private flags = new Map<string, number>();
+  async pushDeferred(jobId: string) {
+    this.deferred.push(jobId);
+  }
+  async popDeferred() {
+    return this.deferred.shift() ?? null;
+  }
+  async setFlag(key: string, ttlSeconds: number) {
+    this.flags.set(key, Date.now() + ttlSeconds * 1000);
+  }
+  async getFlag(key: string) {
+    const expires = this.flags.get(key);
+    return Boolean(expires && expires > Date.now());
   }
 }
 

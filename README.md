@@ -22,8 +22,10 @@ viewer idea ──► Claude (vibe-check + scriptwriting) ──► Lightning in
   computes the current clip + offset from wall-clock time, so every viewer sees the
   same broadcast. When nothing fresh is scheduled, a deterministic rerun loop plays
   the library.
-- **House content**: when the library is thin, the player bootstraps auto-written
-  clips (locked + capped by `MAX_DAILY_HOUSE_CLIPS` so it can't burn money).
+- **House content**: when the library is thin — or the newest clip is older than
+  `HOUSE_FRESH_HOURS` (default 4) — a viewer's player triggers an auto-written
+  clip (locked + capped by `MAX_DAILY_HOUSE_CLIPS` so it can't burn money).
+  Generation is always viewer-triggered: nobody watching, nothing spent.
 - **Moderation before payment**: Claude rejects mean-spirited stuff up front, so
   nobody pays for a clip that won't air.
 - **Mock mode**: with no env vars at all, the app runs on sample videos, canned

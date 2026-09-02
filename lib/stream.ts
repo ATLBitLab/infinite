@@ -30,6 +30,14 @@ export async function nowPlaying(): Promise<NowPlaying> {
   const clips = await store.getClips();
   const now = Date.now();
 
+  // Viewer-triggered house generation fires when the library is thin OR the
+  // newest clip has gone stale (keeps the channel fresh without a cron —
+  // no viewers, no polls, no spend). Budget caps enforced in /api/generate.
+  const newestCreatedAt = clips.reduce((max, c) => Math.max(max, c.createdAt), 0);
+  const stale =
+    config.houseFreshHours > 0 &&
+    now - newestCreatedAt > config.houseFreshHours * 3_600_000;
+
   const empty: NowPlaying = {
     clip: null,
     offsetMs: 0,
@@ -37,7 +45,7 @@ export async function nowPlaying(): Promise<NowPlaying> {
     upNext: [],
     serverNow: now,
     libraryCount: clips.length,
-    needsBootstrap: clips.length < config.minLibraryClips,
+    needsBootstrap: clips.length < config.minLibraryClips || stale,
   };
   if (clips.length === 0) return empty;
 

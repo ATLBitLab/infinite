@@ -23,17 +23,94 @@ interface NowResponse extends NowPlaying {
   activity?: ActivityItem[];
 }
 
+interface SubmissionDraft {
+  idea: string;
+  credit: string;
+  duration: number;
+}
+
 type ModalState =
   | { phase: "closed" }
   | { phase: "compose"; idea: string; credit: string; duration: number; busy: boolean; error?: string }
-  | { phase: "rejected"; reason: string }
-  | { phase: "invoice_pending"; jobId: string; title: string; sats: number }
-  | { phase: "invoice"; jobId: string; title: string; bolt11: string; sats: number }
-  | { phase: "generating"; jobId: string; title: string }
-  | { phase: "deferred"; title: string }
+  | { phase: "reviewing"; jobId?: string; draft: SubmissionDraft; retrying?: boolean }
+  | { phase: "resuming"; jobId: string; draft: SubmissionDraft }
+  | { phase: "rejected"; reason: string; draft: SubmissionDraft }
+  | { phase: "error"; reason: string; draft: SubmissionDraft; jobId?: string }
+  | { phase: "failed"; reason: string; draft: SubmissionDraft; canEdit: boolean }
+  | { phase: "checkout_pending"; jobId: string; title: string; draft: SubmissionDraft; delayed?: boolean }
+  | { phase: "invoice"; jobId: string; title: string; bolt11: string; sats: number; draft: SubmissionDraft }
+  | { phase: "generating"; jobId: string; title: string; draft: SubmissionDraft }
+  | { phase: "deferred"; jobId: string; title: string; draft: SubmissionDraft }
   | { phase: "done"; title: string };
 
 const POLL_MS = 8000;
+const BACKGROUND_DRAIN_MS = 60_000;
+const STATUS_REQUEST_TIMEOUT_MS = 8_000;
+const ACTIVE_SUBMISSION_KEY = "infinite:active-submission";
+const announcedPurchases = new Set<string>();
+
+interface ActiveSubmission {
+  jobId: string;
+  draft: SubmissionDraft;
+}
+
+function readActiveSubmission(): ActiveSubmission | null {
+  try {
+    const raw = window.sessionStorage.getItem(ACTIVE_SUBMISSION_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<ActiveSubmission>;
+    if (
+      typeof value.jobId !== "string" ||
+      !value.draft ||
+      typeof value.draft.idea !== "string" ||
+      typeof value.draft.credit !== "string" ||
+      typeof value.draft.duration !== "number"
+    ) {
+      window.sessionStorage.removeItem(ACTIVE_SUBMISSION_KEY);
+      return null;
+    }
+    return value as ActiveSubmission;
+  } catch {
+    return null;
+  }
+}
+
+function rememberActiveSubmission(active: ActiveSubmission) {
+  try {
+    window.sessionStorage.setItem(ACTIVE_SUBMISSION_KEY, JSON.stringify(active));
+  } catch {
+    // Storage can be unavailable in privacy-restricted browsing contexts.
+  }
+}
+
+function forgetActiveSubmission(jobId?: string) {
+  try {
+    if (jobId) {
+      const active = readActiveSubmission();
+      if (active && active.jobId !== jobId) return;
+    }
+    window.sessionStorage.removeItem(ACTIVE_SUBMISSION_KEY);
+  } catch {
+    // Nothing else to clean up when storage is unavailable.
+  }
+}
+
+function broadcastPurchaseOnce(jobId: string, title: string) {
+  const key = `infinite:purchase-announced:${jobId}`;
+  if (announcedPurchases.has(jobId)) return;
+  try {
+    if (window.sessionStorage.getItem(key)) {
+      announcedPurchases.add(jobId);
+      return;
+    }
+    // Record first so a refresh cannot duplicate the public announcement.
+    window.sessionStorage.setItem(key, "1");
+  } catch {
+    // The in-memory guard still covers this page when storage is unavailable.
+  }
+  announcedPurchases.add(jobId);
+  broadcastPurchase(title);
+}
 
 /** BIP-177 display: sats denominated with the bitcoin symbol, e.g. ₿2,600. */
 const fmtBtc = (sats: number) => `₿${sats.toLocaleString("en-US")}`;
@@ -53,6 +130,15 @@ export default function StreamClient() {
   // Whether we should be playing with sound. Starts true: we attempt unmuted
   // autoplay and downgrade to muted+tap-hint if the browser blocks it.
   const soundIntent = useRef(true);
+
+  // A prepared submission belongs to this tab. Resume its honest server-side
+  // stage after a refresh instead of dropping the user back at an empty form.
+  useEffect(() => {
+    const active = readActiveSubmission();
+    if (active) {
+      setModal({ phase: "resuming", ...active });
+    }
+  }, []);
 
   const fetchNow = useCallback(async () => {
     try {
@@ -85,7 +171,7 @@ export default function StreamClient() {
       }
 
       // Opportunistically retry deferred paid jobs (cheap no-op when empty).
-      if (Date.now() - lastDrain.current > 5 * 60_000) {
+      if (Date.now() - lastDrain.current > BACKGROUND_DRAIN_MS) {
         lastDrain.current = Date.now();
         fetch("/api/generate", {
           method: "POST",
@@ -383,6 +469,44 @@ function TickerText({ now }: { now: NowResponse | null }) {
   );
 }
 
+function SubmissionStages({
+  stage,
+}: {
+  stage: "reviewing" | "checkout" | "ready";
+}) {
+  const reviewDone = stage !== "reviewing";
+  const checkoutReady = stage === "ready";
+  return (
+    <div
+      className="grid w-full grid-cols-[1fr_auto_1fr] items-center gap-2 border-y border-cream/20 py-2 text-[10px] font-bold tracking-[0.16em]"
+      aria-label={
+        stage === "reviewing"
+          ? "Step one of two: AI review"
+          : stage === "checkout"
+            ? "Step two of two: preparing Lightning checkout"
+            : "AI review complete and Lightning checkout ready"
+      }
+    >
+      <span className={reviewDone ? "text-teal" : "text-mustard"}>
+        {reviewDone ? "✓" : <span className="blink">●</span>} AI REVIEW
+      </span>
+      <span className="text-cream/30">→</span>
+      <span
+        className={
+          checkoutReady
+            ? "text-teal"
+            : stage === "checkout"
+              ? "text-mustard"
+              : "text-cream/40"
+        }
+      >
+        {checkoutReady ? "✓" : stage === "checkout" ? <span className="blink">●</span> : "○"}{" "}
+        CHECKOUT
+      </span>
+    </div>
+  );
+}
+
 function SubmitModal({
   modal,
   setModal,
@@ -396,52 +520,212 @@ function SubmitModal({
   identity: Identity | null;
   onScheduled: () => void;
 }) {
-  // Poll our Redis-backed job immediately while the generated webhook is
-  // delivering the invoice, then at a calmer cadence while awaiting payment.
+  const submitController = useRef<AbortController | null>(null);
+  const ideaController = useRef<AbortController | null>(null);
+  const submitAttempt = useRef(0);
+
   useEffect(() => {
-    if (modal.phase !== "invoice_pending" && modal.phase !== "invoice") return;
-    const { jobId, title } = modal;
+    return () => {
+      submitAttempt.current += 1;
+      submitController.current?.abort();
+      ideaController.current?.abort();
+    };
+  }, []);
+
+  // If polling advances the job before the submit response settles, prevent a
+  // late network result from replacing the newer server-backed modal state.
+  useEffect(() => {
+    if (modal.phase !== "reviewing" && submitController.current) {
+      submitAttempt.current += 1;
+      submitController.current.abort();
+      submitController.current = null;
+    }
+  }, [modal.phase]);
+
+  // The same Redis-backed status endpoint covers both the relatively slow AI
+  // preparation and the short handoff into Lightning checkout.
+  useEffect(() => {
+    if (
+      modal.phase !== "reviewing" &&
+      modal.phase !== "resuming" &&
+      modal.phase !== "checkout_pending" &&
+      modal.phase !== "invoice" &&
+      modal.phase !== "generating"
+    ) {
+      return;
+    }
+    const { draft } = modal;
+    if (!modal.jobId) return;
+    const jobId: string = modal.jobId;
+    const currentTitle =
+      modal.phase === "reviewing" || modal.phase === "resuming"
+        ? ""
+        : modal.title;
     const startedAt = Date.now();
     let cancelled = false;
+    let consecutiveErrors = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let statusController: AbortController | undefined;
+
+    function schedule(delay: number) {
+      if (!cancelled) timer = setTimeout(check, delay);
+    }
 
     async function check() {
       try {
-        const res = await fetch(`/api/payment/${jobId}`);
-        const data = await res.json();
+        const controller = new AbortController();
+        statusController = controller;
+        const timeout = setTimeout(
+          () => controller.abort(),
+          STATUS_REQUEST_TIMEOUT_MS,
+        );
+        const res = await fetch(`/api/payment/${jobId}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        }).finally(() => {
+          clearTimeout(timeout);
+          if (statusController === controller) statusController = undefined;
+        });
         if (cancelled) return;
-        if (data.status === "paid" || data.status === "done" || data.status === "generating") {
-          // Payment confirmed: shout it to nostr with our browser identity.
-          broadcastPurchase(title);
-          setModal({ phase: "generating", jobId, title });
-          return;
-        }
-        if (data.status === "failed") {
-          setModal({ phase: "rejected", reason: "Payment expired or failed. No bitcoin was harmed." });
-          return;
-        }
-        if (
-          modal.phase === "invoice_pending" &&
-          typeof data.invoice?.bolt11 === "string" &&
-          typeof data.invoice?.sats === "number"
-        ) {
+        if (res.status === 404) {
+          if (Date.now() - startedAt < 4_000) {
+            schedule(300);
+            return;
+          }
+          forgetActiveSubmission(jobId);
           setModal({
-            phase: "invoice",
-            jobId,
-            title,
-            bolt11: data.invoice.bolt11,
-            sats: data.invoice.sats,
+            phase: "error",
+            reason: "That saved submission is no longer available. Check your wallet history before submitting it again.",
+            draft,
           });
           return;
         }
+        if (!res.ok) throw new Error(`status_${res.status}`);
+        const data = await res.json();
+        if (cancelled) return;
+        consecutiveErrors = 0;
+
+        const title =
+          typeof data.title === "string" && data.title.trim()
+            ? data.title
+            : currentTitle || "Your cartoon";
+
+        if (data.status === "preparing") {
+          const retrying = data.failureStage === "preflight";
+          if (
+            modal.phase !== "reviewing" ||
+            modal.jobId !== jobId ||
+            modal.retrying !== retrying
+          ) {
+            setModal({ phase: "reviewing", jobId, draft, retrying });
+          } else {
+            schedule(750);
+          }
+          return;
+        }
+        if (data.status === "rejected") {
+          forgetActiveSubmission(jobId);
+          setModal({
+            phase: "rejected",
+            reason:
+              typeof data.reason === "string" && data.reason
+                ? data.reason
+                : "Standards & Practices sent this pitch back for a rewrite.",
+            draft,
+          });
+          return;
+        }
+        if (data.status === "awaiting_payment") {
+          const bolt11 = data.invoice?.bolt11;
+          const sats = data.invoice?.sats;
+          if (typeof bolt11 === "string" && typeof sats === "number") {
+            if (modal.phase !== "invoice" || modal.bolt11 !== bolt11) {
+              setModal({ phase: "invoice", jobId, title, bolt11, sats, draft });
+            } else {
+              schedule(1_000);
+            }
+          } else if (
+            modal.phase !== "checkout_pending" ||
+            modal.title !== title ||
+            modal.delayed !== (data.failureStage === "invoice")
+          ) {
+            setModal({
+              phase: "checkout_pending",
+              jobId,
+              title,
+              draft,
+              delayed: data.failureStage === "invoice",
+            });
+          } else {
+            schedule(Date.now() - startedAt < 5_000 ? 300 : 1_000);
+          }
+          return;
+        }
+        if (data.status === "paid") {
+          // Payment confirmed: shout it to nostr with our browser identity.
+          broadcastPurchaseOnce(jobId, title);
+          if (modal.phase !== "generating") {
+            setModal({ phase: "generating", jobId, title, draft });
+          } else {
+            schedule(1_500);
+          }
+          return;
+        }
+        if (data.status === "generating") {
+          broadcastPurchaseOnce(jobId, title);
+          if (modal.phase !== "generating") {
+            setModal({ phase: "generating", jobId, title, draft });
+          } else {
+            schedule(2_000);
+          }
+          return;
+        }
+        if (data.status === "done") {
+          forgetActiveSubmission(jobId);
+          onScheduled();
+          setModal({ phase: "done", title });
+          return;
+        }
+        if (data.status === "failed") {
+          const failureStage = String(data.failureStage ?? "").toLowerCase();
+          const failedDuringPreparation = failureStage === "preflight";
+          const failedDuringPayment = failureStage === "payment";
+          const failedDuringGeneration = failureStage === "generation";
+          forgetActiveSubmission(jobId);
+          setModal({
+            phase: "failed",
+            reason: failedDuringPreparation
+              ? "The writers' room hit a snag before checkout. Nothing was charged."
+              : failedDuringPayment
+                ? "The Lightning invoice expired or failed. No completed payment was found."
+                : failedDuringGeneration
+                  ? "Your payment was received, but the render failed repeatedly. Please contact the station manager."
+                  : "This submission stopped unexpectedly. Check with the station manager before trying it again.",
+            draft,
+            canEdit: failedDuringPreparation || failedDuringPayment,
+          });
+          return;
+        }
+        schedule(750);
       } catch {
-        // keep polling
-      }
-      if (!cancelled) {
-        const waitingForInvoice = modal.phase === "invoice_pending";
-        const delay =
-          waitingForInvoice && Date.now() - startedAt < 5_000 ? 300 : 1_000;
-        timer = setTimeout(check, delay);
+        if (cancelled) return;
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= 5) {
+          const paymentMayHaveStarted =
+            modal.phase === "checkout_pending" ||
+            modal.phase === "invoice" ||
+            modal.phase === "generating";
+          setModal({
+            phase: "error",
+            reason: paymentMayHaveStarted
+              ? "We couldn't verify this submission's payment status. Check its status before submitting again."
+              : "We lost the station signal while checking your saved pitch. Check its status before submitting again.",
+            draft,
+            jobId,
+          });
+          return;
+        }
+        schedule(1_000);
       }
     }
 
@@ -449,13 +733,14 @@ function SubmitModal({
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
+      statusController?.abort();
     };
-  }, [modal, setModal]);
+  }, [modal, setModal, onScheduled]);
 
   // Drive generation once paid.
   useEffect(() => {
     if (modal.phase !== "generating") return;
-    const { jobId, title } = modal;
+    const { jobId, title, draft } = modal;
     let cancelled = false;
     (async () => {
       try {
@@ -467,26 +752,30 @@ function SubmitModal({
         const data = await res.json();
         if (cancelled) return;
         if (data.status === "done") {
+          forgetActiveSubmission(jobId);
           onScheduled();
           setModal({ phase: "done", title });
         } else if (data.status === "deferred") {
-          setModal({ phase: "deferred", title });
+          setModal({ phase: "deferred", jobId, title, draft });
         } else if (data.status === "generating") {
-          // Another instance is on it; poll until done.
-          const poll = setInterval(async () => {
-            const s = await (await fetch(`/api/payment/${jobId}`)).json();
-            if (s.status === "done") {
-              clearInterval(poll);
-              onScheduled();
-              setModal({ phase: "done", title });
-            }
-          }, 3000);
+          // The status effect above keeps watching the other worker.
         } else {
-          setModal({ phase: "rejected", reason: "Generation failed. Ping the station manager." });
+          setModal({
+            phase: "error",
+            reason: "We couldn't verify the render request. Your payment record is saved; check status before trying anything again.",
+            draft,
+            jobId,
+          });
         }
       } catch {
-        if (!cancelled)
-          setModal({ phase: "rejected", reason: "Generation failed. Ping the station manager." });
+        if (!cancelled) {
+          setModal({
+            phase: "error",
+            reason: "We lost the station signal while starting the render. Your payment record is saved; check status to resume.",
+            draft,
+            jobId,
+          });
+        }
       }
     })();
     return () => {
@@ -496,51 +785,86 @@ function SubmitModal({
 
   async function submit() {
     if (modal.phase !== "compose") return;
-    setModal({ ...modal, busy: true, error: undefined });
+    const draft: SubmissionDraft = {
+      idea: modal.idea,
+      credit: modal.credit,
+      duration: modal.duration,
+    };
+    const attempt = submitAttempt.current + 1;
+    submitAttempt.current = attempt;
+    submitController.current?.abort();
+    ideaController.current?.abort();
+    const controller = new AbortController();
+    submitController.current = controller;
+    // Show the real slow stage immediately; the server returns its durable,
+    // server-generated payment/job ID before starting model work.
+    setModal({ phase: "reviewing", draft });
+
     try {
       const res = await fetch("/api/submit", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Infinite-Submit-Version": "2",
+        },
         body: JSON.stringify({
-          idea: modal.idea,
-          credit: modal.credit || identity?.name || "",
-          duration: modal.duration,
+          idea: draft.idea,
+          credit: draft.credit || identity?.name || "",
+          duration: draft.duration,
         }),
+        signal: controller.signal,
       });
       const data = await res.json();
+      if (controller.signal.aborted || submitAttempt.current !== attempt) return;
       if (data.rejected) {
-        setModal({ phase: "rejected", reason: data.reason });
-      } else if (data.jobId) {
+        setModal({ phase: "rejected", reason: data.reason, draft });
+      } else if (!res.ok || typeof data.jobId !== "string") {
+        setModal({
+          phase: "error",
+          reason: data.error ?? "The station couldn't start the review. Your wallet wasn't touched.",
+          draft,
+        });
+      } else {
+        const jobId = data.jobId;
+        rememberActiveSubmission({ jobId, draft });
         if (data.invoice?.bolt11) {
+          // Tolerate an older/fast server response while deployments roll over.
           setModal({
             phase: "invoice",
-            jobId: data.jobId,
+            jobId,
             title: data.title,
             bolt11: data.invoice.bolt11,
             sats: data.invoice.sats,
+            draft,
           });
+        } else if (data.status === "awaiting_payment" && data.title) {
+          setModal({ phase: "checkout_pending", jobId, title: data.title, draft });
         } else {
-          setModal({
-            phase: "invoice_pending",
-            jobId: data.jobId,
-            title: data.title,
-            sats: data.sats,
-          });
+          setModal({ phase: "reviewing", jobId, draft });
         }
-      } else {
-        setModal({ ...modal, busy: false, error: data.error ?? "Something broke." });
       }
     } catch {
-      setModal({ ...modal, busy: false, error: "Network error. Try again." });
+      if (controller.signal.aborted || submitAttempt.current !== attempt) return;
+      setModal({
+        phase: "error",
+        reason: "We couldn't confirm that the writers' room received your pitch. No checkout was shown, so nothing was charged.",
+        draft,
+      });
+    } finally {
+      if (submitController.current === controller) submitController.current = null;
     }
   }
 
   async function giveMeAnIdea() {
     if (modal.phase !== "compose") return;
+    ideaController.current?.abort();
+    const controller = new AbortController();
+    ideaController.current = controller;
     setModal({ ...modal, busy: true, error: undefined });
     try {
-      const res = await fetch("/api/idea");
+      const res = await fetch("/api/idea", { signal: controller.signal });
       const data = await res.json();
+      if (controller.signal.aborted) return;
       setModal({
         phase: "compose",
         idea: data.idea ?? "",
@@ -550,19 +874,64 @@ function SubmitModal({
         error: data.error,
       });
     } catch {
+      if (controller.signal.aborted) return;
       setModal({ ...modal, busy: false, error: "The writers' room hung up." });
+    } finally {
+      if (ideaController.current === controller) ideaController.current = null;
     }
   }
 
+  function closeModal() {
+    submitAttempt.current += 1;
+    submitController.current?.abort();
+    ideaController.current?.abort();
+    forgetActiveSubmission();
+    setModal({ phase: "closed" });
+  }
+
+  function editDraft(draft: SubmissionDraft) {
+    submitAttempt.current += 1;
+    submitController.current?.abort();
+    ideaController.current?.abort();
+    forgetActiveSubmission();
+    setModal({ phase: "compose", ...draft, busy: false });
+  }
+
+  const heading =
+    modal.phase === "reviewing"
+      ? "WRITERS' ROOM"
+      : modal.phase === "resuming"
+        ? "CHECKING THE TAPE"
+        : modal.phase === "checkout_pending"
+          ? "GREENLIT!"
+          : modal.phase === "invoice"
+            ? "LIGHTNING CHECKOUT"
+            : modal.phase === "generating"
+              ? "IN PRODUCTION"
+              : modal.phase === "deferred"
+                ? "QUEUED!"
+                : modal.phase === "done"
+                  ? "SCHEDULED!"
+                  : modal.phase === "rejected"
+                    ? "PITCH RETURNED"
+                    : modal.phase === "error" || modal.phase === "failed"
+                      ? "STATION ERROR"
+                      : "ADD TO STREAM";
   return (
-    <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/80 p-4">
-      <div className="w-full max-w-md border-4 border-mustard bg-panel p-5 shadow-[8px_8px_0_#e63946]">
+    <div
+      className="absolute inset-0 z-10 flex items-center justify-center bg-black/80 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="submission-heading"
+    >
+      <div className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto border-4 border-mustard bg-panel p-5 shadow-[8px_8px_0_#e63946]">
         <div className="mb-3 flex items-start justify-between">
-          <h2 className="font-[family-name:var(--font-display)] text-xl text-mustard">
-            {modal.phase === "done" ? "SCHEDULED!" : "ADD TO STREAM"}
+          <h2 id="submission-heading" className="font-[family-name:var(--font-display)] text-xl text-mustard">
+            {heading}
           </h2>
           <button
-            onClick={() => setModal({ phase: "closed" })}
+            onClick={closeModal}
+            aria-label="Close submission"
             className="border-2 border-cream/40 px-2 text-sm hover:border-danger hover:text-danger"
           >
             ✕
@@ -637,8 +1006,8 @@ function SubmitModal({
                 className="flex-1 border-2 border-orange bg-orange px-3 py-2 text-xs font-bold tracking-wider text-void hover:bg-mustard hover:border-mustard disabled:opacity-40"
               >
                 {modal.busy
-                  ? "CHECKING…"
-                  : `PAY ${
+                  ? "WRITING…"
+                  : `REVIEW & PAY ${
                       now?.priceTable?.[modal.duration]
                         ? fmtBtc(now.priceTable[modal.duration])
                         : now
@@ -653,37 +1022,100 @@ function SubmitModal({
         {modal.phase === "rejected" && (
           <div className="flex flex-col gap-3">
             <p className="text-sm">{modal.reason}</p>
+            <p className="text-xs text-teal">No payment was requested.</p>
             <button
-              onClick={() =>
-                setModal({
-                  phase: "compose",
-                  idea: "",
-                  credit: "",
-                  duration: 15,
-                  busy: false,
-                })
-              }
+              onClick={() => editDraft(modal.draft)}
               className="border-2 border-teal px-3 py-2 text-xs font-bold tracking-wider text-teal hover:bg-teal hover:text-void"
             >
-              TRY ANOTHER IDEA
+              EDIT PITCH
             </button>
           </div>
         )}
 
-        {modal.phase === "invoice_pending" && (
-          <div className="flex flex-col items-center gap-3 py-8">
-            <div className="font-[family-name:var(--font-display)] text-lg text-teal blink">
-              PRINTING INVOICE…
+        {(modal.phase === "error" || modal.phase === "failed") && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm">{modal.reason}</p>
+            <div className="flex gap-2">
+              {modal.phase === "error" && modal.jobId && (
+                <button
+                  onClick={() =>
+                    setModal({
+                      phase: "resuming",
+                      jobId: modal.jobId!,
+                      draft: modal.draft,
+                    })
+                  }
+                  className="flex-1 border-2 border-teal px-3 py-2 text-xs font-bold tracking-wider text-teal hover:bg-teal hover:text-void"
+                >
+                  CHECK STATUS
+                </button>
+              )}
+              {(modal.phase === "error" ? !modal.jobId : modal.canEdit) && (
+                <button
+                  onClick={() => editDraft(modal.draft)}
+                  className="flex-1 border-2 border-orange px-3 py-2 text-xs font-bold tracking-wider text-orange hover:bg-orange hover:text-void"
+                >
+                  EDIT PITCH
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {modal.phase === "reviewing" && (
+          <div className="flex flex-col items-center gap-3 py-5" role="status" aria-live="polite">
+            <SubmissionStages stage="reviewing" />
+            <div className="font-[family-name:var(--font-display)] text-lg text-teal">
+              <span className="blink">●</span>{" "}
+              {modal.retrying ? "REVISING THE DRAFT…" : "WRITING YOUR SCENE…"}
             </div>
             <p className="text-center text-sm opacity-80">
-              Voltage is generating the payment code for{" "}
+              {modal.retrying
+                ? "The writers' room hit a snag and queued a safe background retry. Checkout still comes later — nothing has been charged."
+                : "The house AI is checking the vibe and turning your pitch into a production-ready scene. Payment comes next — nothing has been charged."}
+            </p>
+            <p className="text-center text-[10px] tracking-wider text-cream/50">
+              {modal.retrying
+                ? "YOU CAN CLOSE — NO CHECKOUT EXISTS YET"
+                : "THIS IS THE PART THAT CAN TAKE A FEW SECONDS"}
+            </p>
+          </div>
+        )}
+
+        {modal.phase === "resuming" && (
+          <div className="flex flex-col items-center gap-3 py-5" role="status" aria-live="polite">
+            <div className="font-[family-name:var(--font-display)] text-lg text-teal">
+              <span className="blink">●</span> CHECKING SUBMISSION…
+            </div>
+            <p className="text-center text-sm opacity-80">
+              Pulling the latest saved review, checkout, and render status.
+            </p>
+          </div>
+        )}
+
+        {modal.phase === "checkout_pending" && (
+          <div className="flex flex-col items-center gap-3 py-5" role="status" aria-live="polite">
+            <SubmissionStages stage="checkout" />
+            <div className="font-[family-name:var(--font-display)] text-lg text-teal">
+              <span className="blink">●</span> OPENING CHECKOUT…
+            </div>
+            <p className="text-center text-sm opacity-80">
+              {modal.delayed
+                ? "The script is ready. Checkout is reconnecting safely for "
+                : "The script is ready. Opening Lightning checkout for "}
               <span className="text-mustard">“{modal.title}”</span>.
+            </p>
+            <p className="text-center text-[10px] tracking-wider text-cream/50">
+              {modal.delayed
+                ? "NO PAYMENT HAS BEEN SENT — WE'LL KEEP CHECKING"
+                : "NO PAYMENT HAS BEEN SENT YET"}
             </p>
           </div>
         )}
 
         {modal.phase === "invoice" && (
           <div className="flex flex-col items-center gap-3">
+            <SubmissionStages stage="ready" />
             <p className="text-center text-sm">
               <span className="text-mustard">“{modal.title}”</span> is greenlit.
               Pay <b>{fmtBtc(modal.sats)}</b> to roll cameras.
@@ -733,7 +1165,7 @@ function SubmitModal({
               air automatically once it recovers — no extra sats needed.
             </p>
             <button
-              onClick={() => setModal({ phase: "closed" })}
+              onClick={closeModal}
               className="border-2 border-orange bg-orange px-4 py-2 text-xs font-bold tracking-wider text-void hover:bg-mustard hover:border-mustard"
             >
               BACK TO THE STREAM
@@ -748,7 +1180,7 @@ function SubmitModal({
             the broadcast. Watch for it — it airs next.
             </p>
             <button
-              onClick={() => setModal({ phase: "closed" })}
+              onClick={closeModal}
               className="border-2 border-orange bg-orange px-4 py-2 text-xs font-bold tracking-wider text-void hover:bg-mustard hover:border-mustard"
             >
               BACK TO THE STREAM

@@ -7,7 +7,9 @@ import {
 /** Voltage Payments API (https://voltageapi.com/v1/docs).
  * Auth: x-api-key header. Amounts are in millisats for btc.
  * Create is async: POST returns 202 and receive.generated delivers the
- * BOLT11 to our webhook. A scheduled worker uses GET only for reconciliation.
+ * BOLT11 to our webhook. A scheduled worker primarily uses GET for
+ * reconciliation and can safely replay the same server-generated ID after a
+ * bounded not-found grace period.
  * Mock mode returns the invoice inline and auto-settles after ~5s. */
 
 const H = () => ({
@@ -24,6 +26,7 @@ export async function createInvoice(
   paymentId: string,
   sats: number,
   description: string,
+  options: { allowExisting?: boolean; signal?: AbortSignal } = {},
 ): Promise<string | undefined> {
   if (mockMode.voltage) return mockCreateInvoice(paymentId, sats);
 
@@ -39,7 +42,9 @@ export async function createInvoice(
       description: description.slice(0, 200),
       expiration: 3600,
     }),
+    signal: options.signal,
   });
+  if (res.status === 409 && options.allowExisting) return undefined;
   if (!res.ok && res.status !== 202) {
     throw new Error(`voltage create payment failed: ${res.status} ${await res.text()}`);
   }
@@ -88,6 +93,7 @@ const mockInvoices = (globalThis as unknown as {
 }).__mockInvoices ??= new Map<string, number>();
 
 async function mockCreateInvoice(paymentId: string, sats: number): Promise<string> {
+  if (mockInvoices.has(paymentId)) return mockBolt11(paymentId, sats);
   mockInvoices.set(paymentId, Date.now());
   const timer = setTimeout(async () => {
     try {
@@ -101,12 +107,16 @@ async function mockCreateInvoice(paymentId: string, sats: number): Promise<strin
     }
   }, 5_000);
   timer.unref();
+  return mockBolt11(paymentId, sats);
+}
+
+function mockBolt11(paymentId: string, sats: number) {
   return `lnbcmock${sats}n1_${paymentId.replace(/-/g, "")}_this_is_a_mock_invoice_set_voltage_env_vars_to_go_live`;
 }
 
 async function mockGetPayment(paymentId: string): Promise<PaymentState> {
   const created = mockInvoices.get(paymentId);
-  if (!created) return { status: "failed", paid: false };
+  if (!created) return { status: "not_found", paid: false };
   const paid = Date.now() - created > 5000;
   return { status: paid ? "completed" : "receiving", paid };
 }

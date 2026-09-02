@@ -31,7 +31,11 @@ function getClient(): Anthropic {
   return client;
 }
 
-async function callClaude(system: string, user: string): Promise<string> {
+async function callClaude(
+  system: string,
+  user: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const client = getClient();
   const base = {
     model: MODEL,
@@ -44,14 +48,18 @@ async function callClaude(system: string, user: string): Promise<string> {
   };
   // effort + server-side fallbacks only exist on the Opus 5 tier; Haiku
   // rejects them (and doesn't think unprompted, so it's fast as-is).
+  const options = signal ? { signal } : undefined;
   const response = MODEL.includes("opus-5")
-    ? await client.beta.messages.create({
-        ...base,
-        output_config: { effort: "medium" },
-        betas: ["server-side-fallback-2026-06-01"],
-        fallbacks: [{ model: "claude-opus-4-8" }],
-      })
-    : await client.messages.create(base);
+    ? await client.beta.messages.create(
+        {
+          ...base,
+          output_config: { effort: "medium" },
+          betas: ["server-side-fallback-2026-06-01"],
+          fallbacks: [{ model: "claude-opus-4-8" }],
+        },
+        options,
+      )
+    : await client.messages.create(base, options);
   if (response.stop_reason === "refusal") {
     throw new Error("model_refused");
   }
@@ -81,6 +89,7 @@ function parseJson<T>(raw: string): T {
 export async function moderateAndExpand(
   idea: string,
   segments: number[] = [config.clipDuration],
+  signal?: AbortSignal,
 ): Promise<ModerationResult> {
   if (mockMode.llm) return mockModerate(idea, segments);
 
@@ -103,7 +112,11 @@ Respond with ONLY a JSON object:
   ${sceneSpec}
 }`;
 
-  const result = await callClaude(system, `Viewer idea: ${JSON.stringify(idea)}`);
+  const result = await callClaude(
+    system,
+    `Viewer idea: ${JSON.stringify(idea)}`,
+    signal,
+  );
   const parsed = parseJson<
     ModerationResult & { characterSheet?: string; scenes?: string[] }
   >(result);

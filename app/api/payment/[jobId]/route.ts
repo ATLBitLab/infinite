@@ -13,15 +13,24 @@ export async function GET(
   const job = await store.getJob(jobId);
   if (!job) return Response.json({ error: "unknown job" }, { status: 404 });
 
+  // A stored invoice is not browser-visible until the full render prompt has
+  // passed moderation and the job has crossed the payment gate.
+  const invoiceReady =
+    job.status === "awaiting_payment" &&
+    Boolean(job.paymentId && job.title && job.videoPrompt && job.sats && job.bolt11);
+
   return Response.json({
     jobId: job.id,
     status: job.status,
-    title: job.title,
+    title: job.title || undefined,
+    reason: job.moderationReason,
+    sats: job.sats,
     invoice:
-      job.bolt11 && job.sats
+      invoiceReady
         ? { bolt11: job.bolt11, sats: job.sats }
         : null,
     clipId: job.clipId,
     error: job.error,
+    failureStage: job.failureStage,
   });
 }

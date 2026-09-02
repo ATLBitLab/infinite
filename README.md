@@ -8,14 +8,17 @@ Built at [ATL BitLab](https://atlbitlab.com).
 
 ## How it works
 
-```
-viewer idea ──► Claude (vibe-check + scriptwriting) ──► Lightning invoice (Voltage)
-                                                              │ paid
-                                                              ▼
-                                    fal.ai MiniMax H3 Max (15s clip in ~9s)
-                                                              │
-                                                              ▼
-                              scheduled playlist ──► "synthetic live" player
+```text
+viewer idea ──► durable "preparing" job ──► UI shows AI REVIEW immediately
+                           │ post-response worker; cron repairs interruptions
+                           ▼
+                 Claude vibe-check + scriptwriting
+                           │ complete prompt stored before payment
+                           ▼
+                 Lightning invoice (Voltage) ──► QR code
+                           │ paid
+                           ▼
+                 fal.ai render ──► scheduled playlist ──► "synthetic live" player
 ```
 
 - **Synthetic live**: no streaming servers. Every clip gets an air slot; `/api/now`
@@ -28,6 +31,11 @@ viewer idea ──► Claude (vibe-check + scriptwriting) ──► Lightning in
   Generation is always viewer-triggered: nobody watching, nothing spent.
 - **Moderation before payment**: Claude rejects mean-spirited stuff up front, so
   nobody pays for a clip that won't air.
+- **Responsive submission**: `/api/submit` stores the pitch and returns its job ID
+  before Claude runs. The UI shows the AI review stage while a post-response task
+  writes the script. Voltage receives an invoice request only after the complete
+  render prompt is stored. A submit-flow header makes older open tabs refresh
+  instead of interpreting the new preparation state as invoice latency.
 - **Mock mode**: with no env vars at all, the app runs on sample videos, canned
   ideas, and fake auto-settling invoices — full flow, zero spend.
 
@@ -113,16 +121,21 @@ observes either update through its short local poll without waiting on the
 Payments API.
 
 Reconciliation is only the recovery path. `vercel.json` invokes
-`/api/cron/reconcile-payments` once per minute to repair any invoice or
-terminal state missed by a webhook. Set a random `CRON_SECRET` of at least 16
-characters in Vercel; Vercel supplies it as the route's bearer token
-automatically.
+`/api/cron/reconcile-payments` once per minute. The job repairs missed payment
+events, retries a bounded exact-ID invoice request after persistent `404`
+responses, and recovers one interrupted AI preparation per run. Set a random
+`CRON_SECRET` of at least 16 characters in Vercel. Vercel supplies it as the
+route's bearer token automatically.
 
 The worker claims at most 25 pending jobs per run, checks five concurrently,
 and rotates unresolved jobs to prevent one stale payment from blocking newer
 ones. Per-minute cron schedules require a Vercel Pro or Enterprise project; on
 Hobby, invoke the same authenticated route from an external scheduler or use a
 schedule allowed by that plan.
+
+A completed payment atomically enters the existing generation queue. The active
+browser starts rendering immediately; if it goes away, a viewer's background
+drain picks the paid job up later without requiring another payment event.
 
 ## Roadmap
 

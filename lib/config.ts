@@ -14,10 +14,14 @@ export const config = {
   // Voltage — bitcoin payments
   voltage: {
     apiKey: process.env.VOLTAGE_API_KEY ?? "",
-    orgId: process.env.VOLTAGE_ORG_ID ?? "",
-    envId: process.env.VOLTAGE_ENV_ID ?? "",
-    walletId: process.env.VOLTAGE_WALLET_ID ?? "",
+    orgId: (process.env.VOLTAGE_ORG_ID ?? "").toLowerCase(),
+    envId: (process.env.VOLTAGE_ENV_ID ?? "").toLowerCase(),
+    walletId: (process.env.VOLTAGE_WALLET_ID ?? "").toLowerCase(),
     baseUrl: process.env.VOLTAGE_API_URL ?? "https://voltageapi.com/v1",
+    // Returned once when the environment webhook is registered. The webhook
+    // id lets us reject deliveries intended for a different registration.
+    webhookId: (process.env.VOLTAGE_WEBHOOK_ID ?? "").toLowerCase(),
+    webhookSecret: process.env.VOLTAGE_WEBHOOK_SECRET ?? "",
   },
 
   // Pricing: PRICE_SATS pins a fixed sat price; otherwise PRICE_USD is

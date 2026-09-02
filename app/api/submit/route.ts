@@ -9,8 +9,9 @@ import type { Job } from "@/lib/types";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-/** Submit an idea: moderate it, and if it passes, hand back a Lightning
- * invoice + job id. Payment is checked in /api/payment/[jobId]. */
+/** Submit an idea, moderate it, and request a Lightning invoice. Live invoice
+ * data arrives asynchronously through the Voltage webhook; mock mode can hand
+ * it back inline. Payment state is exposed by /api/payment/[jobId]. */
 export async function POST(request: Request) {
   // Never take someone's sats for a job a non-persistent store would forget.
   if (persistenceMisconfigured()) {
@@ -20,7 +21,8 @@ export async function POST(request: Request) {
     );
   }
   // Never take someone's sats while the render farm is balance-locked.
-  if (await getStore().getFlag(FAL_LOCK_FLAG)) {
+  const store = getStore();
+  if (await store.getFlag(FAL_LOCK_FLAG)) {
     return Response.json(
       { error: "The render farm is refueling — submissions are paused for a few minutes. Your sats are safe in your wallet where they belong." },
       { status: 503 },
@@ -47,8 +49,9 @@ export async function POST(request: Request) {
 
     const sats = await submissionPriceSats();
     const jobId = randomUUID();
-    const invoice = await createInvoice(sats, `INFINITE: ${moderation.title}`.slice(0, 90));
-
+    // Use one UUID for both records so detail.data.id from a webhook resolves
+    // directly to this job. Persist before the create request: generated can
+    // be delivered before this HTTP handler returns.
     const job: Job = {
       id: jobId,
       status: "awaiting_payment",
@@ -56,17 +59,36 @@ export async function POST(request: Request) {
       title: moderation.title,
       videoPrompt: moderation.videoPrompt,
       credit,
-      paymentId: invoice.paymentId,
+      paymentId: jobId,
+      sats,
       createdAt: Date.now(),
     };
-    await getStore().putJob(job);
+    await store.putJob(job);
 
-    return Response.json({
+    const immediateBolt11 = await createInvoice(
       jobId,
-      title: moderation.title,
-      reason: moderation.reason,
-      invoice: { bolt11: invoice.bolt11, sats: invoice.sats },
-    });
+      sats,
+      `INFINITE: ${moderation.title}`.slice(0, 90),
+    );
+    if (immediateBolt11) {
+      await store.setJobInvoice(jobId, jobId, immediateBolt11);
+    }
+
+    // The webhook may have won the race with the create response. Include its
+    // invoice when available; otherwise the browser begins polling our store.
+    const current = await store.getJob(jobId);
+    const bolt11 = current?.bolt11;
+
+    return Response.json(
+      {
+        jobId,
+        title: moderation.title,
+        reason: moderation.reason,
+        sats,
+        invoice: bolt11 ? { bolt11, sats } : null,
+      },
+      { status: bolt11 ? 200 : 202 },
+    );
   } catch (err) {
     console.error("submit failed:", err);
     return Response.json({ error: "Something broke backstage. Try again." }, { status: 500 });

@@ -1,80 +1,119 @@
-import { createHmac, timingSafeEqual } from "crypto";
-import { getStore } from "@/lib/store";
+import { after } from "next/server";
+import { config } from "@/lib/config";
+import {
+  publishPaymentActivity,
+  recordInvoice,
+  recordPaymentCompleted,
+  recordPaymentFailed,
+} from "@/lib/payment-state";
+import {
+  parseVoltageWebhook,
+  verifyVoltageWebhookSignature,
+} from "@/lib/voltage-webhook";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-/** Voltage webhook receiver (https://docs.voltageapi.com/webhooks).
- *
- * Voltage's GET /payments reads a lagging replica, which made QR generation
- * slow. Webhooks deliver payment state straight from the primary; we verify
- * the signature and mirror the state into our own store, which createInvoice
- * and the payment-status route read first.
- *
- * Signature: base64(HMAC-SHA256(secret, `${rawBody} ${timestamp}`)) in
- * x-voltage-signature, timestamp in x-voltage-timestamp. */
-
-const MAX_SKEW_MS = 5 * 60_000;
-
-interface VoltagePayload {
-  type: "send" | "receive" | "test";
-  detail?: {
-    event?: string;
-    data?: {
-      id?: string;
-      status?: string;
-      data?: { payment_request?: string };
-    };
-  };
+function empty(status: number) {
+  return new Response(null, { status });
 }
 
-function verifySignature(rawBody: string, signature: string, timestamp: string): boolean {
-  const secret = process.env.VOLTAGE_WEBHOOK_SECRET ?? "";
-  if (!secret) return false;
-  const expected = createHmac("sha256", secret)
-    .update(`${rawBody} ${timestamp}`)
-    .digest();
-  let provided: Buffer;
-  try {
-    provided = Buffer.from(signature, "base64");
-  } catch {
-    return false;
-  }
-  return provided.length === expected.length && timingSafeEqual(provided, expected);
-}
-
+/** Receive low-latency payment snapshots from Voltage. Keep this handler
+ * smaller than Voltage's two-second delivery timeout: authenticate, persist,
+ * acknowledge. Rendering and video generation remain browser-driven. */
 export async function POST(request: Request) {
-  if (!process.env.VOLTAGE_WEBHOOK_SECRET) {
-    return Response.json({ error: "webhook secret not configured" }, { status: 503 });
+  const { webhookId, webhookSecret, orgId, envId, walletId } = config.voltage;
+  if (!webhookId || !webhookSecret) {
+    console.error("Voltage webhook received before VOLTAGE_WEBHOOK_ID/SECRET were configured");
+    return empty(503);
   }
 
-  const signature = request.headers.get("x-voltage-signature") ?? "";
-  const timestamp = request.headers.get("x-voltage-timestamp") ?? "";
+  const deliveredWebhookId = request.headers.get("x-voltage-webhook-id");
+  const signature = request.headers.get("x-voltage-signature");
+  const timestamp = request.headers.get("x-voltage-timestamp");
+  const eventHeader = request.headers.get("x-voltage-event");
+  if (
+    deliveredWebhookId?.toLowerCase() !== webhookId ||
+    !signature ||
+    !timestamp ||
+    !eventHeader
+  ) {
+    return empty(401);
+  }
+
+  // request.text() preserves the payload representation used to calculate the
+  // signature. Never verify a parsed/re-serialized JSON object.
   const rawBody = await request.text();
-
-  if (!signature || !timestamp || !verifySignature(rawBody, signature, timestamp)) {
-    return Response.json({ error: "bad signature" }, { status: 401 });
+  if (
+    !verifyVoltageWebhookSignature({
+      rawBody,
+      timestamp,
+      signature,
+      secret: webhookSecret,
+    })
+  ) {
+    return empty(401);
   }
-  const tsMs = Number(timestamp) * (timestamp.length > 11 ? 1 : 1000);
-  if (!Number.isFinite(tsMs) || Math.abs(Date.now() - tsMs) > MAX_SKEW_MS) {
-    return Response.json({ error: "stale timestamp" }, { status: 401 });
+
+  const payload = parseVoltageWebhook(rawBody);
+  if (!payload || payload.detail.event !== eventHeader) return empty(400);
+  if (payload.type === "test") return empty(204);
+
+  const payment = payload.detail.data;
+  // A registration is environment-wide, but reject a valid delivery if its
+  // payment scope does not match the environment configured for this app.
+  if (
+    payment.organization_id !== orgId ||
+    payment.environment_id !== envId ||
+    payment.wallet_id !== walletId ||
+    (payment.direction && payment.direction !== "receive") ||
+    (payment.type && payment.type !== "bolt11")
+  ) {
+    console.warn(`Ignoring out-of-scope Voltage ${payload.detail.event} webhook`);
+    return empty(204);
   }
 
-  let payload: VoltagePayload;
   try {
-    payload = JSON.parse(rawBody);
-  } catch {
-    return Response.json({ error: "bad json" }, { status: 400 });
+    const bolt11 = payment.data?.payment_request;
+    const ref = { jobId: payment.id, paymentId: payment.id };
+    switch (payload.detail.event) {
+      case "generated":
+      case "refreshed":
+        if (!bolt11) return empty(503);
+        await recordInvoice(ref, bolt11);
+        break;
+      case "completed": {
+        // Only the durable state transition is on Voltage's two-second
+        // critical path. Invoice backfill and public activity are non-critical.
+        const transitioned = await recordPaymentCompleted(ref);
+        if (bolt11 || transitioned) {
+          after(async () => {
+            try {
+              if (bolt11) await recordInvoice(ref, bolt11);
+              if (transitioned) await publishPaymentActivity(ref.jobId);
+            } catch (err) {
+              console.error("post-payment webhook work failed:", err);
+            }
+          });
+        }
+        break;
+      }
+      case "expired":
+      case "failed":
+        await recordPaymentFailed(ref, payload.detail.event);
+        break;
+      // detected/succeeded are partial receipt states, not authorization to
+      // generate a paid clip.
+      case "detected":
+      case "succeeded":
+        break;
+    }
+  } catch (err) {
+    console.error("Voltage webhook persistence failed:", err);
+    return empty(503);
   }
 
-  if (payload.type === "receive" && payload.detail?.data?.id) {
-    const payment = payload.detail.data;
-    await getStore().putPaymentState(payment.id!, {
-      status: payment.status ?? "unknown",
-      bolt11: payment.data?.payment_request,
-      event: payload.detail.event ?? "unknown",
-      ts: Date.now(),
-    });
-  }
-  // Acknowledge everything (including test events) quickly.
-  return Response.json({ ok: true });
+  // Signed events for payments created by another app in this environment are
+  // intentionally acknowledged; the atomic store methods simply find no job.
+  return empty(204);
 }

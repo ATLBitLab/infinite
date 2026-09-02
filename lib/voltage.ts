@@ -1,12 +1,14 @@
-import { randomUUID } from "crypto";
 import { config, mockMode } from "./config";
-import { getStore } from "./store";
-import type { InvoiceInfo } from "./types";
+import {
+  publishPaymentActivity,
+  recordPaymentCompleted,
+} from "./payment-state";
 
 /** Voltage Payments API (https://voltageapi.com/v1/docs).
  * Auth: x-api-key header. Amounts are in millisats for btc.
- * Create is async: POST returns 202, then poll GET until the bolt11
- * payment_request appears. Mock mode auto-settles invoices after ~5s. */
+ * Create is async: POST returns 202 and receive.generated delivers the
+ * BOLT11 to our webhook. A scheduled worker uses GET only for reconciliation.
+ * Mock mode returns the invoice inline and auto-settles after ~5s. */
 
 const H = () => ({
   "x-api-key": config.voltage.apiKey,
@@ -19,17 +21,17 @@ function paymentsUrl(paymentId = "") {
 }
 
 export async function createInvoice(
+  paymentId: string,
   sats: number,
   description: string,
-): Promise<InvoiceInfo> {
-  if (mockMode.voltage) return mockCreateInvoice(sats);
+): Promise<string | undefined> {
+  if (mockMode.voltage) return mockCreateInvoice(paymentId, sats);
 
-  const id = randomUUID();
   const res = await fetch(paymentsUrl(), {
     method: "POST",
     headers: H(),
     body: JSON.stringify({
-      id,
+      id: paymentId,
       wallet_id: config.voltage.walletId,
       payment_kind: "bolt11",
       // btc amounts are denominated in millisats
@@ -41,37 +43,10 @@ export async function createInvoice(
   if (!res.ok && res.status !== 202) {
     throw new Error(`voltage create payment failed: ${res.status} ${await res.text()}`);
   }
-
-  // Fast path: the "receive generated" webhook mirrors the bolt11 into our
-  // store straight from Voltage's primary (~300ms), bypassing their lagging
-  // read replica. Poll our store tightly for a few seconds first.
-  const store = getStore();
-  const webhookDeadline = Date.now() + 4000;
-  while (Date.now() < webhookDeadline) {
-    const state = await store.getPaymentState(id);
-    if (state?.bolt11) {
-      return { paymentId: id, bolt11: state.bolt11, sats };
-    }
-    if (state && (state.status === "failed" || state.status === "expired")) {
-      throw new Error(`voltage payment ${state.status} before invoice generation`);
-    }
-    await new Promise((r) => setTimeout(r, 150));
-  }
-
-  // Fallback: webhook not configured or delayed — poll their API directly.
-  // Creation is async: the record 404s briefly after the 202, so 404 means
-  // "not materialized yet", not an error.
-  for (let i = 0; i < 16; i++) {
-    const payment = await getPayment(id);
-    if (payment.bolt11) {
-      return { paymentId: id, bolt11: payment.bolt11, sats };
-    }
-    if (payment.status === "failed" || payment.status === "expired") {
-      throw new Error(`voltage payment ${payment.status} before invoice generation`);
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error("voltage invoice generation timed out");
+  // Live invoice data arrives through receive.generated. The client polls our
+  // Redis-backed job endpoint while a scheduled worker reconciles missed
+  // webhook deliveries out of band.
+  return undefined;
 }
 
 export interface PaymentState {
@@ -80,34 +55,15 @@ export interface PaymentState {
   paid: boolean;
 }
 
-export async function getPayment(paymentId: string): Promise<PaymentState> {
+export async function getPayment(
+  paymentId: string,
+  signal?: AbortSignal,
+): Promise<PaymentState> {
   if (mockMode.voltage) return mockGetPayment(paymentId);
 
-  // Webhook-fed state is fresher than Voltage's read replica — prefer it.
-  // Reconciliation: a non-terminal state that hasn't been refreshed recently
-  // could mean a lost delivery, so fall through to the replica then.
-  const state = await getStore().getPaymentState(paymentId);
-  const terminal =
-    state && ["completed", "failed", "expired"].includes(state.status);
-  if (state && (terminal || Date.now() - state.ts < 15_000)) {
-    return {
-      status: state.status,
-      bolt11: state.bolt11,
-      paid: state.status === "completed",
-    };
-  }
-
-  const res = await fetch(paymentsUrl(paymentId), { headers: H() });
-  // Async creation + replica lag: a payment can 404 for a moment after its
-  // 202. Prefer whatever the webhook told us over a replica 404.
+  const res = await fetch(paymentsUrl(paymentId), { headers: H(), signal });
+  // Async creation: a payment can 404 for a moment after its 202.
   if (res.status === 404) {
-    if (state) {
-      return {
-        status: state.status,
-        bolt11: state.bolt11,
-        paid: state.status === "completed",
-      };
-    }
     return { status: "not_found", paid: false };
   }
   if (!res.ok) {
@@ -131,14 +87,21 @@ const mockInvoices = (globalThis as unknown as {
   __mockInvoices?: Map<string, number>;
 }).__mockInvoices ??= new Map<string, number>();
 
-async function mockCreateInvoice(sats: number): Promise<InvoiceInfo> {
-  const id = randomUUID();
-  mockInvoices.set(id, Date.now());
-  return {
-    paymentId: id,
-    bolt11: `lnbcmock${sats}n1_${id.replace(/-/g, "")}_this_is_a_mock_invoice_set_voltage_env_vars_to_go_live`,
-    sats,
-  };
+async function mockCreateInvoice(paymentId: string, sats: number): Promise<string> {
+  mockInvoices.set(paymentId, Date.now());
+  const timer = setTimeout(async () => {
+    try {
+      const transitioned = await recordPaymentCompleted({
+        jobId: paymentId,
+        paymentId,
+      });
+      if (transitioned) await publishPaymentActivity(paymentId);
+    } catch (err) {
+      console.error("mock payment settlement failed:", err);
+    }
+  }, 5_000);
+  timer.unref();
+  return `lnbcmock${sats}n1_${paymentId.replace(/-/g, "")}_this_is_a_mock_invoice_set_voltage_env_vars_to_go_live`;
 }
 
 async function mockGetPayment(paymentId: string): Promise<PaymentState> {

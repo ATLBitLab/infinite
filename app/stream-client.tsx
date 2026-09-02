@@ -24,6 +24,7 @@ type ModalState =
   | { phase: "closed" }
   | { phase: "compose"; idea: string; credit: string; busy: boolean; error?: string }
   | { phase: "rejected"; reason: string }
+  | { phase: "invoice_pending"; jobId: string; title: string; sats: number }
   | { phase: "invoice"; jobId: string; title: string; bolt11: string; sats: number }
   | { phase: "generating"; jobId: string; title: string }
   | { phase: "deferred"; title: string }
@@ -377,29 +378,60 @@ function SubmitModal({
   identity: Identity | null;
   onScheduled: () => void;
 }) {
-  // Poll payment status while an invoice is showing.
+  // Poll our Redis-backed job immediately while the generated webhook is
+  // delivering the invoice, then at a calmer cadence while awaiting payment.
   useEffect(() => {
-    if (modal.phase !== "invoice") return;
+    if (modal.phase !== "invoice_pending" && modal.phase !== "invoice") return;
     const { jobId, title } = modal;
-    const t = setInterval(async () => {
+    const startedAt = Date.now();
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function check() {
       try {
         const res = await fetch(`/api/payment/${jobId}`);
         const data = await res.json();
+        if (cancelled) return;
         if (data.status === "paid" || data.status === "done" || data.status === "generating") {
-          clearInterval(t);
           // Payment confirmed: shout it to nostr with our browser identity.
           broadcastPurchase(title);
           setModal({ phase: "generating", jobId, title });
+          return;
         }
         if (data.status === "failed") {
-          clearInterval(t);
           setModal({ phase: "rejected", reason: "Payment expired or failed. No bitcoin was harmed." });
+          return;
+        }
+        if (
+          modal.phase === "invoice_pending" &&
+          typeof data.invoice?.bolt11 === "string" &&
+          typeof data.invoice?.sats === "number"
+        ) {
+          setModal({
+            phase: "invoice",
+            jobId,
+            title,
+            bolt11: data.invoice.bolt11,
+            sats: data.invoice.sats,
+          });
+          return;
         }
       } catch {
         // keep polling
       }
-    }, 2500);
-    return () => clearInterval(t);
+      if (!cancelled) {
+        const waitingForInvoice = modal.phase === "invoice_pending";
+        const delay =
+          waitingForInvoice && Date.now() - startedAt < 5_000 ? 300 : 1_000;
+        timer = setTimeout(check, delay);
+      }
+    }
+
+    void check();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [modal, setModal]);
 
   // Drive generation once paid.
@@ -460,13 +492,22 @@ function SubmitModal({
       if (data.rejected) {
         setModal({ phase: "rejected", reason: data.reason });
       } else if (data.jobId) {
-        setModal({
-          phase: "invoice",
-          jobId: data.jobId,
-          title: data.title,
-          bolt11: data.invoice.bolt11,
-          sats: data.invoice.sats,
-        });
+        if (data.invoice?.bolt11) {
+          setModal({
+            phase: "invoice",
+            jobId: data.jobId,
+            title: data.title,
+            bolt11: data.invoice.bolt11,
+            sats: data.invoice.sats,
+          });
+        } else {
+          setModal({
+            phase: "invoice_pending",
+            jobId: data.jobId,
+            title: data.title,
+            sats: data.sats,
+          });
+        }
       } else {
         setModal({ ...modal, busy: false, error: data.error ?? "Something broke." });
       }
@@ -558,6 +599,18 @@ function SubmitModal({
             >
               TRY ANOTHER IDEA
             </button>
+          </div>
+        )}
+
+        {modal.phase === "invoice_pending" && (
+          <div className="flex flex-col items-center gap-3 py-8">
+            <div className="font-[family-name:var(--font-display)] text-lg text-teal blink">
+              PRINTING INVOICE…
+            </div>
+            <p className="text-center text-sm opacity-80">
+              Voltage is generating the payment code for{" "}
+              <span className="text-mustard">“{modal.title}”</span>.
+            </p>
           </div>
         )}
 

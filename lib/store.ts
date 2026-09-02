@@ -11,6 +11,13 @@ interface Store {
   addClip(clip: Clip): Promise<void>;
   getJob(id: string): Promise<Job | null>;
   putJob(job: Job): Promise<void>;
+  /** Add the BOLT11 without replacing newer job state. */
+  setJobInvoice(jobId: string, paymentId: string, bolt11: string): Promise<boolean>;
+  /** Monotonic payment transitions. True means this call changed state. */
+  markJobPaid(jobId: string, paymentId: string): Promise<boolean>;
+  markJobPaymentFailed(jobId: string, paymentId: string, reason: string): Promise<boolean>;
+  /** Claim the oldest jobs awaiting scheduled payment reconciliation. */
+  claimPendingPaymentJobs(limit: number): Promise<Job[]>;
   /** Atomic-ish counter for daily house-clip budget. Returns new count. */
   incrHouseCount(dayKey: string): Promise<number>;
   /** Simple lock with TTL. Returns true if acquired. */
@@ -31,16 +38,6 @@ interface Store {
   /** Rolling public activity feed (paid submissions), newest first. */
   pushActivity(item: ActivityItem): Promise<void>;
   getActivity(): Promise<ActivityItem[]>;
-  /** Webhook-fed Voltage payment state (bypasses their read-replica lag). */
-  putPaymentState(paymentId: string, state: WebhookPaymentState): Promise<void>;
-  getPaymentState(paymentId: string): Promise<WebhookPaymentState | null>;
-}
-
-export interface WebhookPaymentState {
-  status: string;
-  bolt11?: string;
-  event: string;
-  ts: number;
 }
 
 const PRESENCE_KEY = "infinite:presence";
@@ -50,6 +47,50 @@ const ACTIVITY_MAX = 20;
 
 const CLIPS_KEY = "infinite:clips";
 const JOB_PREFIX = "infinite:job:";
+const PENDING_PAYMENTS_KEY = "infinite:pending-payments";
+const PENDING_PAYMENT_SCAN_CURSOR_KEY = "infinite:pending-payment-scan-cursor";
+const JOB_TTL_SECONDS = 60 * 60 * 24 * 7;
+
+// Webhook deliveries can be duplicated or arrive alongside a reconciliation
+// read. Patch only payment-owned fields atomically so a late "generated" event
+// can never replace "paid", "generating", or "done" state.
+const SET_JOB_INVOICE_SCRIPT = `
+local raw = redis.call("GET", KEYS[1])
+if not raw then return 0 end
+local job = cjson.decode(raw)
+if job.paymentId ~= ARGV[1] then return 0 end
+job.bolt11 = ARGV[2]
+redis.call("SET", KEYS[1], cjson.encode(job), "EX", ARGV[3])
+return 1
+`;
+
+const MARK_JOB_PAID_SCRIPT = `
+local raw = redis.call("GET", KEYS[1])
+if not raw then return 0 end
+local job = cjson.decode(raw)
+if job.paymentId ~= ARGV[1] then return 0 end
+local payment_failure = job.status == "failed"
+  and type(job.error) == "string"
+  and string.sub(job.error, 1, 8) == "payment "
+if job.status ~= "awaiting_payment" and not payment_failure then return 0 end
+job.status = "paid"
+job.error = nil
+redis.call("SET", KEYS[1], cjson.encode(job), "EX", ARGV[2])
+redis.call("ZREM", KEYS[2], ARGV[3])
+return 1
+`;
+
+const MARK_JOB_PAYMENT_FAILED_SCRIPT = `
+local raw = redis.call("GET", KEYS[1])
+if not raw then return 0 end
+local job = cjson.decode(raw)
+if job.paymentId ~= ARGV[1] or job.status ~= "awaiting_payment" then return 0 end
+job.status = "failed"
+job.error = ARGV[2]
+redis.call("SET", KEYS[1], cjson.encode(job), "EX", ARGV[3])
+redis.call("ZREM", KEYS[2], ARGV[4])
+return 1
+`;
 
 class RedisStore implements Store {
   private redis: Redis;
@@ -69,9 +110,115 @@ class RedisStore implements Store {
     return typeof raw === "string" ? JSON.parse(raw) : raw;
   }
   async putJob(job: Job): Promise<void> {
-    await this.redis.set(JOB_PREFIX + job.id, JSON.stringify(job), {
-      ex: 60 * 60 * 24 * 7,
+    const pipeline = this.redis
+      .pipeline()
+      .set(JOB_PREFIX + job.id, JSON.stringify(job), { ex: JOB_TTL_SECONDS });
+    if (job.status === "awaiting_payment" && job.paymentId) {
+      pipeline.zadd(
+        PENDING_PAYMENTS_KEY,
+        { nx: true },
+        { score: job.createdAt, member: job.id },
+      );
+    } else {
+      pipeline.zrem(PENDING_PAYMENTS_KEY, job.id);
+    }
+    await pipeline.exec();
+  }
+  async setJobInvoice(jobId: string, paymentId: string, bolt11: string): Promise<boolean> {
+    const changed = await this.redis.eval<[string, string, string], number>(
+      SET_JOB_INVOICE_SCRIPT,
+      [JOB_PREFIX + jobId],
+      [paymentId, bolt11, String(JOB_TTL_SECONDS)],
+    );
+    return changed === 1;
+  }
+  async markJobPaid(jobId: string, paymentId: string): Promise<boolean> {
+    const changed = await this.redis.eval<[string, string, string], number>(
+      MARK_JOB_PAID_SCRIPT,
+      [JOB_PREFIX + jobId, PENDING_PAYMENTS_KEY],
+      [paymentId, String(JOB_TTL_SECONDS), jobId],
+    );
+    return changed === 1;
+  }
+  async markJobPaymentFailed(jobId: string, paymentId: string, reason: string): Promise<boolean> {
+    const changed = await this.redis.eval<[string, string, string, string], number>(
+      MARK_JOB_PAYMENT_FAILED_SCRIPT,
+      [JOB_PREFIX + jobId, PENDING_PAYMENTS_KEY],
+      [paymentId, reason, String(JOB_TTL_SECONDS), jobId],
+    );
+    return changed === 1;
+  }
+  async claimPendingPaymentJobs(limit: number): Promise<Job[]> {
+    if (limit <= 0) return [];
+    await this.backfillPendingPaymentIndex();
+    const jobIds = await this.redis.zrange<string[]>(
+      PENDING_PAYMENTS_KEY,
+      0,
+      limit - 1,
+    );
+    if (jobIds.length === 0) return [];
+
+    const rawJobs = await this.redis.mget<(Job | string | null)[]>(
+      ...jobIds.map((id) => JOB_PREFIX + id),
+    );
+    const jobs: Job[] = [];
+    const pipeline = this.redis.pipeline();
+    const claimedAt = Date.now();
+    for (let i = 0; i < jobIds.length; i++) {
+      const raw = rawJobs[i];
+      const job = typeof raw === "string" ? (JSON.parse(raw) as Job) : raw;
+      if (job?.status === "awaiting_payment" && job.paymentId) {
+        jobs.push(job);
+        // Move claimed jobs to the back so one stuck payment cannot starve
+        // newer jobs when a sweep reaches its per-run limit.
+        pipeline.zadd(PENDING_PAYMENTS_KEY, {
+          score: claimedAt,
+          member: job.id,
+        });
+      } else {
+        pipeline.zrem(PENDING_PAYMENTS_KEY, jobIds[i]);
+      }
+    }
+    if (pipeline.length() > 0) await pipeline.exec();
+    return jobs;
+  }
+  private async backfillPendingPaymentIndex(): Promise<void> {
+    // Incrementally scan the existing seven-day job window. This picks up
+    // in-flight jobs created before the pending index was deployed, including
+    // legacy jobs whose job and Voltage payment IDs differ.
+    const storedCursor = await this.redis.get<string | number>(
+      PENDING_PAYMENT_SCAN_CURSOR_KEY,
+    );
+    const cursor = storedCursor === null ? "0" : String(storedCursor);
+    const [nextCursor, keys] = await this.redis.scan(cursor, {
+      match: `${JOB_PREFIX}*`,
+      count: 100,
     });
+    const pipeline = this.redis.pipeline().set(
+      PENDING_PAYMENT_SCAN_CURSOR_KEY,
+      nextCursor,
+    );
+    if (keys.length === 0) {
+      await pipeline.exec();
+      return;
+    }
+
+    const rawJobs = await this.redis.mget<(Job | string | null)[]>(...keys);
+    for (let i = 0; i < keys.length; i++) {
+      const raw = rawJobs[i];
+      const job = typeof raw === "string" ? (JSON.parse(raw) as Job) : raw;
+      const jobId = keys[i].slice(JOB_PREFIX.length);
+      if (job?.status === "awaiting_payment" && job.paymentId) {
+        pipeline.zadd(
+          PENDING_PAYMENTS_KEY,
+          { nx: true },
+          { score: job.createdAt, member: job.id },
+        );
+      } else {
+        pipeline.zrem(PENDING_PAYMENTS_KEY, jobId);
+      }
+    }
+    await pipeline.exec();
   }
   async incrHouseCount(dayKey: string): Promise<number> {
     const key = `infinite:housecount:${dayKey}`;
@@ -140,16 +287,6 @@ class RedisStore implements Store {
     const raw = await this.redis.lrange<ActivityItem>(ACTIVITY_KEY, 0, ACTIVITY_MAX - 1);
     return raw.map((a) => (typeof a === "string" ? JSON.parse(a) : a));
   }
-  async putPaymentState(paymentId: string, state: WebhookPaymentState): Promise<void> {
-    await this.redis.set(`infinite:vpay:${paymentId}`, JSON.stringify(state), {
-      ex: 60 * 60 * 24,
-    });
-  }
-  async getPaymentState(paymentId: string): Promise<WebhookPaymentState | null> {
-    const raw = await this.redis.get<WebhookPaymentState>(`infinite:vpay:${paymentId}`);
-    if (!raw) return null;
-    return typeof raw === "string" ? JSON.parse(raw) : raw;
-  }
 }
 
 function parseViewerMember(member: string): ViewerSample {
@@ -162,6 +299,7 @@ function parseViewerMember(member: string): ViewerSample {
 class MemoryStore implements Store {
   private clips: Clip[] = [];
   private jobs = new Map<string, Job>();
+  private pendingPaymentAttempts = new Map<string, number>();
   private counters = new Map<string, number>();
   private locks = new Map<string, number>();
   async getClips() {
@@ -175,6 +313,55 @@ class MemoryStore implements Store {
   }
   async putJob(job: Job) {
     this.jobs.set(job.id, job);
+    if (job.status === "awaiting_payment" && job.paymentId) {
+      if (!this.pendingPaymentAttempts.has(job.id)) {
+        this.pendingPaymentAttempts.set(job.id, job.createdAt);
+      }
+    } else {
+      this.pendingPaymentAttempts.delete(job.id);
+    }
+  }
+  async setJobInvoice(jobId: string, paymentId: string, bolt11: string) {
+    const job = this.jobs.get(jobId);
+    if (!job || job.paymentId !== paymentId) return false;
+    job.bolt11 = bolt11;
+    return true;
+  }
+  async markJobPaid(jobId: string, paymentId: string) {
+    const job = this.jobs.get(jobId);
+    if (!job || job.paymentId !== paymentId) return false;
+    const paymentFailure = job.status === "failed" && job.error?.startsWith("payment ");
+    if (job.status !== "awaiting_payment" && !paymentFailure) return false;
+    job.status = "paid";
+    delete job.error;
+    this.pendingPaymentAttempts.delete(jobId);
+    return true;
+  }
+  async markJobPaymentFailed(jobId: string, paymentId: string, reason: string) {
+    const job = this.jobs.get(jobId);
+    if (!job || job.paymentId !== paymentId || job.status !== "awaiting_payment") return false;
+    job.status = "failed";
+    job.error = reason;
+    this.pendingPaymentAttempts.delete(jobId);
+    return true;
+  }
+  async claimPendingPaymentJobs(limit: number) {
+    const ids = [...this.pendingPaymentAttempts]
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, Math.max(0, limit))
+      .map(([id]) => id);
+    const claimedAt = Date.now();
+    const jobs: Job[] = [];
+    for (const id of ids) {
+      const job = this.jobs.get(id);
+      if (job?.status === "awaiting_payment" && job.paymentId) {
+        jobs.push(job);
+        this.pendingPaymentAttempts.set(id, claimedAt);
+      } else {
+        this.pendingPaymentAttempts.delete(id);
+      }
+    }
+    return jobs;
   }
   async incrHouseCount(dayKey: string) {
     const n = (this.counters.get(dayKey) ?? 0) + 1;
@@ -232,13 +419,6 @@ class MemoryStore implements Store {
   }
   async getActivity() {
     return [...this.activity];
-  }
-  private paymentStates = new Map<string, WebhookPaymentState>();
-  async putPaymentState(paymentId: string, state: WebhookPaymentState) {
-    this.paymentStates.set(paymentId, state);
-  }
-  async getPaymentState(paymentId: string) {
-    return this.paymentStates.get(paymentId) ?? null;
   }
 }
 

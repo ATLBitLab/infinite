@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { moderateAndExpand } from "@/lib/llm";
 import { createInvoice } from "@/lib/voltage";
 import { submissionPriceSats } from "@/lib/price";
-import { getStore } from "@/lib/store";
+import { getStore, persistenceMisconfigured } from "@/lib/store";
 import type { Job } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +11,13 @@ export const maxDuration = 60;
 /** Submit an idea: moderate it, and if it passes, hand back a Lightning
  * invoice + job id. Payment is checked in /api/payment/[jobId]. */
 export async function POST(request: Request) {
+  // Never take someone's sats for a job a non-persistent store would forget.
+  if (persistenceMisconfigured()) {
+    return Response.json(
+      { error: "The station is misconfigured (no Redis). Submissions are paused." },
+      { status: 503 },
+    );
+  }
   let body: { idea?: string; credit?: string };
   try {
     body = await request.json();

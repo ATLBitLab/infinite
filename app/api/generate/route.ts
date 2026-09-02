@@ -3,7 +3,7 @@ import { generateVideo } from "@/lib/fal";
 import { generateIdea } from "@/lib/llm";
 import { moderateAndExpand } from "@/lib/llm";
 import { scheduleClip } from "@/lib/stream";
-import { getStore } from "@/lib/store";
+import { getStore, persistenceMisconfigured } from "@/lib/store";
 import { config } from "@/lib/config";
 import type { Clip } from "@/lib/types";
 
@@ -17,6 +17,18 @@ export const maxDuration = 300;
  *    and a daily budget so viewers' players can bootstrap the stream without
  *    burning money. */
 export async function POST(request: Request) {
+  // Refuse to spend money on generations that a non-persistent store would
+  // immediately forget (deployed without Redis → every instance is amnesiac).
+  if (persistenceMisconfigured()) {
+    return Response.json(
+      {
+        error:
+          "Refusing to generate: no Redis configured, clips cannot persist on serverless. Add Upstash Redis (UPSTASH_REDIS_REST_URL/TOKEN) and redeploy.",
+      },
+      { status: 503 },
+    );
+  }
+
   let body: { jobId?: string; house?: boolean };
   try {
     body = await request.json();

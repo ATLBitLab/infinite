@@ -7,6 +7,8 @@ import type { NowPlaying } from "@/lib/types";
 interface NowResponse extends NowPlaying {
   priceSats: number;
   mockMode: { fal: boolean; llm: boolean; voltage: boolean };
+  store: "redis" | "memory";
+  configError?: string;
 }
 
 type ModalState =
@@ -113,6 +115,13 @@ export default function StreamClient() {
           {soundOn ? "SOUND: ON" : "SOUND: OFF"}
         </button>
       </div>
+
+      {/* ---- config error banner ---- */}
+      {now?.configError && (
+        <div className="absolute left-0 right-0 top-14 mx-auto w-fit max-w-[90%] border-2 border-danger bg-black/85 px-4 py-2 text-center text-sm text-danger">
+          ⚠ STATION MISCONFIGURED: {now.configError}
+        </div>
+      )}
 
       {/* ---- lower third ---- */}
       <div className="absolute bottom-16 left-0 right-0 flex flex-col gap-2 px-4">

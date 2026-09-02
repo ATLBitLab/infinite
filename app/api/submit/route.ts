@@ -1,19 +1,27 @@
 import { randomUUID } from "crypto";
-import { moderateAndExpand } from "@/lib/llm";
-import { createInvoice } from "@/lib/voltage";
-import { clampDuration, splitSegments, submissionPriceSats } from "@/lib/price";
+import { after } from "next/server";
+import { clampDuration, splitSegments } from "@/lib/price";
 import { getStore, persistenceMisconfigured } from "@/lib/store";
 import { FAL_LOCK_FLAG } from "@/lib/fal";
 import { config } from "@/lib/config";
+import { prepareSubmission } from "@/lib/submission-preflight";
 import type { Job } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-/** Submit an idea, moderate it, and request a Lightning invoice. Live invoice
- * data arrives asynchronously through the Voltage webhook; mock mode can hand
- * it back inline. Payment state is exposed by /api/payment/[jobId]. */
+/** Persist a submission immediately. The slow writers' room runs after this
+ * response and must finish before it can request a Lightning invoice. */
 export async function POST(request: Request) {
+  // An already-open predeploy tab would mislabel the new preparing response as
+  // invoice generation. Fail it before creating a job so it asks for a refresh
+  // instead of reviving the misleading Voltage wait screen.
+  if (request.headers.get("x-infinite-submit-version") !== "2") {
+    return Response.json(
+      { error: "The submission flow was updated. Refresh the page and try again." },
+      { status: 409 },
+    );
+  }
   // Never take someone's sats for a job a non-persistent store would forget.
   if (persistenceMisconfigured()) {
     return Response.json(
@@ -43,58 +51,33 @@ export async function POST(request: Request) {
   if (idea.length < 5) {
     return Response.json({ error: "Give us a little more than that." }, { status: 400 });
   }
-
   try {
     const segments = splitSegments(duration);
-    const moderation = await moderateAndExpand(idea, segments);
-    if (!moderation.allowed) {
-      return Response.json({ rejected: true, reason: moderation.reason }, { status: 200 });
-    }
-
-    const sats = await submissionPriceSats(duration);
+    // Payment IDs are always server-generated. Reusing a caller-controlled ID
+    // after our Redis TTL could otherwise attach an old paid invoice to a new
+    // prompt during reconciliation.
     const jobId = randomUUID();
-    // Use one UUID for both records so detail.data.id from a webhook resolves
-    // directly to this job. Persist before the create request: generated can
-    // be delivered before this HTTP handler returns.
     const job: Job = {
       id: jobId,
-      status: "awaiting_payment",
+      status: "preparing",
       idea,
-      title: moderation.title,
-      videoPrompt: moderation.videoPrompt,
+      title: "",
+      videoPrompt: "",
       credit,
-      paymentId: jobId,
-      sats,
       duration,
-      scenePrompts: moderation.scenePrompts,
       segmentDurations: segments,
       createdAt: Date.now(),
     };
-    await store.putJob(job);
+    const stored = await store.createPreparingJob(job);
 
-    const immediateBolt11 = await createInvoice(
-      jobId,
-      sats,
-      `INFINITE: ${moderation.title}`.slice(0, 90),
-    );
-    if (immediateBolt11) {
-      await store.setJobInvoice(jobId, jobId, immediateBolt11);
-    }
-
-    // The webhook may have won the race with the create response. Include its
-    // invoice when available; otherwise the browser begins polling our store.
-    const current = await store.getJob(jobId);
-    const bolt11 = current?.bolt11;
+    after(() => prepareSubmission(jobId));
 
     return Response.json(
       {
         jobId,
-        title: moderation.title,
-        reason: moderation.reason,
-        sats,
-        invoice: bolt11 ? { bolt11, sats } : null,
+        status: stored.status,
       },
-      { status: bolt11 ? 200 : 202 },
+      { status: 202 },
     );
   } catch (err) {
     console.error("submit failed:", err);

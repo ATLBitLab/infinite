@@ -20,17 +20,27 @@ export interface Clip {
 }
 
 export type JobStatus =
+  | "preparing"
+  | "rejected"
   | "awaiting_payment"
   | "paid"
   | "generating"
   | "done"
   | "failed";
 
+export type JobFailureStage =
+  | "preflight"
+  | "invoice"
+  | "payment"
+  | "generation";
+
 export interface Job {
   id: string;
   status: JobStatus;
   idea: string;
+  /** Empty only while the writers' room is preparing the submission. */
   title: string;
+  /** Empty only while the writers' room is preparing the submission. */
   videoPrompt: string;
   credit?: string;
   paymentId?: string;
@@ -49,7 +59,19 @@ export interface Job {
   /** BOLT11 populated by the receive.generated webhook (or reconciliation). */
   bolt11?: string;
   clipId?: string;
+  /** Viewer-facing explanation from standards and practices. */
+  moderationReason?: string;
   error?: string;
+  failureStage?: JobFailureStage;
+  /** Failed or interrupted writers' room attempts. */
+  preflightAttempts?: number;
+  /** When the complete render prompt crossed the durable payment gate. */
+  preparedAt?: number;
+  /** Bounded attempts to submit this job's server-generated payment ID. */
+  invoiceRequestAttempts?: number;
+  invoiceRequestAt?: number;
+  /** Lease protecting a paid render from duplicate workers. */
+  generationLeaseUntil?: number;
   /** Failed generation attempts so far (job stays retryable until capped). */
   retries?: number;
   createdAt: number;

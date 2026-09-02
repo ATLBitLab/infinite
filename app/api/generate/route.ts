@@ -21,14 +21,18 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 const MAX_JOB_RETRIES = 5;
+// Longer than this route's maximum lifetime. If an invocation is terminated,
+// a viewer can safely reclaim the job after the lease expires.
+const GENERATION_LEASE_MS = 330_000;
+const GENERATION_DRAIN_LOCK_SECONDS = 330;
 
 /** Run a generation.
  *  - {jobId}: generate the clip for a PAID job.
  *  - {house: true}: generate auto-written filler content, guarded by a lock
  *    and a daily budget so viewers' players can bootstrap the stream without
  *    burning money.
- *  - {drain: true}: retry deferred paid jobs (payments whose generation
- *    failed earlier, e.g. while fal was balance-locked). */
+ *  - {drain: true}: generate queued paid jobs, including retries after the
+ *    render farm was temporarily unavailable. */
 export async function POST(request: Request) {
   // Refuse to spend money on generations that a non-persistent store would
   // immediately forget (deployed without Redis → every instance is amnesiac).
@@ -62,8 +66,6 @@ export async function POST(request: Request) {
  * Throws on generation failure (caller decides defer-vs-fail). */
 async function runGeneration(job: Job) {
   const store = getStore();
-  job.status = "generating";
-  await store.putJob(job);
 
   const prompts = job.scenePrompts?.length ? job.scenePrompts : [job.videoPrompt];
   const lengths = job.segmentDurations?.length === prompts.length
@@ -104,6 +106,7 @@ async function runGeneration(job: Job) {
 
   job.status = "done";
   job.clipId = clip.id;
+  delete job.generationLeaseUntil;
   await store.putJob(job);
   return clip;
 }
@@ -121,27 +124,35 @@ async function deferJob(job: Job, err: unknown) {
   if (job.retries >= MAX_JOB_RETRIES) {
     job.status = "failed";
     job.error = "generation failed repeatedly";
+    job.failureStage = "generation";
+    delete job.generationLeaseUntil;
     await store.putJob(job);
     return Response.json({ error: "generation failed repeatedly" }, { status: 500 });
   }
   job.status = "paid";
+  delete job.generationLeaseUntil;
   await store.putJob(job);
-  await store.pushDeferred(job.id);
   return Response.json({ status: "deferred" }, { status: 503 });
 }
 
 async function generateForJob(jobId: string) {
   const store = getStore();
-  const job = await store.getJob(jobId);
-  if (!job) return Response.json({ error: "unknown job" }, { status: 404 });
-  if (job.status === "done") {
-    return Response.json({ status: "done", clipId: job.clipId });
-  }
-  if (job.status === "generating") {
-    return Response.json({ status: "generating" });
-  }
-  if (job.status !== "paid") {
-    return Response.json({ error: `job is ${job.status}, not paid` }, { status: 409 });
+  const job = await store.claimJobGeneration(jobId, GENERATION_LEASE_MS);
+  if (!job) {
+    const current = await store.getJob(jobId);
+    if (!current) {
+      return Response.json({ error: "unknown job" }, { status: 404 });
+    }
+    if (current.status === "done") {
+      return Response.json({ status: "done", clipId: current.clipId });
+    }
+    if (current.status === "generating") {
+      return Response.json({ status: "generating" });
+    }
+    return Response.json(
+      { error: `job is ${current.status}, not paid` },
+      { status: 409 },
+    );
   }
 
   try {
@@ -152,23 +163,26 @@ async function generateForJob(jobId: string) {
   }
 }
 
-/** Retry queued paid jobs. Triggered opportunistically by viewers' players;
- * cheap no-op when the queue is empty or fal is still locked. */
+/** Generate queued paid jobs. Every successful payment enters this durable
+ * queue, and generation failures re-enter it. Viewers drain it opportunistically;
+ * the endpoint is a cheap no-op when empty or while fal is locked. */
 async function drainDeferred() {
   const store = getStore();
   if (await store.getFlag(FAL_LOCK_FLAG)) {
     return Response.json({ status: "fal_locked" }, { status: 202 });
   }
-  const locked = await store.acquireLock("drain", 120);
+  const locked = await store.acquireLock(
+    "drain",
+    GENERATION_DRAIN_LOCK_SECONDS,
+  );
   if (!locked) return Response.json({ status: "busy" }, { status: 202 });
 
   const results: { jobId: string; status: string }[] = [];
   try {
-    for (let i = 0; i < 2; i++) {
-      const jobId = await store.popDeferred();
-      if (!jobId) break;
-      const job = await store.getJob(jobId);
-      if (!job || job.status !== "paid") continue;
+    const jobIds = await store.claimPendingGenerationJobIds(2);
+    for (const jobId of jobIds) {
+      const job = await store.claimJobGeneration(jobId, GENERATION_LEASE_MS);
+      if (!job) continue;
       try {
         await runGeneration(job);
         results.push({ jobId, status: "done" });

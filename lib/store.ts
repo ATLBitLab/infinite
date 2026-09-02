@@ -1,5 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { config } from "./config";
+import { repairCredit } from "./names";
 import type {
   ActivityItem,
   Clip,
@@ -250,7 +251,11 @@ class RedisStore implements Store {
   }
   async getClips(): Promise<Clip[]> {
     const raw = await this.redis.lrange<Clip>(CLIPS_KEY, 0, -1);
-    return raw.map((c) => (typeof c === "string" ? JSON.parse(c) : c));
+    return raw.map((c) => {
+      const clip: Clip = typeof c === "string" ? JSON.parse(c) : c;
+      // Legacy rows carry "grumpy undefined" credits from the old name bug.
+      return { ...clip, credit: repairCredit(clip.credit, clip.id) };
+    });
   }
   async addClip(clip: Clip): Promise<void> {
     await this.redis.rpush(CLIPS_KEY, JSON.stringify(clip));
@@ -592,7 +597,10 @@ class RedisStore implements Store {
   }
   async getActivity(): Promise<ActivityItem[]> {
     const raw = await this.redis.lrange<ActivityItem>(ACTIVITY_KEY, 0, ACTIVITY_MAX - 1);
-    return raw.map((a) => (typeof a === "string" ? JSON.parse(a) : a));
+    return raw.map((a) => {
+      const item: ActivityItem = typeof a === "string" ? JSON.parse(a) : a;
+      return { ...item, name: repairCredit(item.name, item.id) };
+    });
   }
 }
 

@@ -1,5 +1,8 @@
 import { generateSecretKey, getPublicKey, finalizeEvent } from "nostr-tools/pure";
 import { SimplePool } from "nostr-tools/pool";
+import { nameForPubkey } from "@/lib/names";
+
+export { nameForPubkey, hueForId } from "@/lib/names";
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -33,45 +36,11 @@ export const RELAYS = [
   "wss://relay.primal.net",
 ];
 
-const ADJECTIVES = [
-  "floppy", "sneaky", "turbo", "sleepy", "spicy", "wobbly", "cosmic", "grumpy",
-  "shiny", "feral", "dapper", "soggy", "zesty", "mellow", "rowdy", "crispy",
-  "gnarly", "plucky", "fuzzy", "jazzy", "salty", "breezy", "chunky", "nimble",
-  "quirky", "rusty", "snappy", "velvet", "wired", "bouncy", "smug", "electric",
-];
-
-const ANIMALS = [
-  "wombat", "pelican", "ferret", "walrus", "gecko", "badger", "heron", "otter",
-  "possum", "iguana", "marmot", "toucan", "lemur", "narwhal", "beaver", "falcon",
-  "mongoose", "tapir", "puffin", "axolotl", "capybara", "stoat", "ibex", "quokka",
-  "raccoon", "newt", "osprey", "armadillo", "shrew", "kestrel", "yak", "dingo",
-];
-
 export interface Identity {
   pubkey: string;
   /** First 16 hex chars — the presence id sent on heartbeats. */
   shortId: string;
   name: string;
-}
-
-function hashHex(hex: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < hex.length; i++) {
-    h ^= hex.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-export function nameForPubkey(pubkey: string): string {
-  const h = hashHex(pubkey);
-  // >>> keeps the shifted hash unsigned; >> can go negative and make the
-  // modulo negative, yielding "nimble undefined"-style names.
-  return `${ADJECTIVES[h % ADJECTIVES.length]} ${ANIMALS[(h >>> 8) % ANIMALS.length]}`;
-}
-
-export function hueForId(id: string): number {
-  return hashHex(id) % 360;
 }
 
 function getSecretKey(): Uint8Array {

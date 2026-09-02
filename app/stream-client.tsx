@@ -229,7 +229,7 @@ export default function StreamClient() {
       </div>
 
       {/* ---- bottom bar ---- */}
-      <div className="absolute bottom-0 left-0 right-0 flex items-center gap-3 border-t-4 border-mustard bg-panel px-4 py-2">
+      <div className="absolute bottom-0 left-0 right-0 flex items-center gap-3 border-t-4 border-mustard bg-panel px-4 py-3">
         <button
           onClick={() =>
             setModal({ phase: "compose", idea: "", credit: "", busy: false })
@@ -247,28 +247,28 @@ export default function StreamClient() {
             <TickerText now={now} />
           </div>
         </div>
-        <div className="hidden shrink-0 items-center gap-4 md:flex">
+        <div className="hidden shrink-0 items-center gap-5 md:flex">
           <a
             href="https://atlbitlab.com"
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1.5 opacity-60 transition-opacity hover:opacity-100"
+            className="flex items-center gap-2 opacity-80 transition-opacity hover:opacity-100"
           >
-            <span className="text-[9px] font-bold tracking-[0.2em]">AN</span>
+            <span className="text-[11px] font-bold tracking-[0.2em]">AN</span>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/atlbitlab-white.png" alt="ATL BitLab" className="h-5 w-auto" />
-            <span className="text-[9px] font-bold tracking-[0.2em]">PROJECT</span>
+            <img src="/atlbitlab-white.png" alt="ATL BitLab" className="h-9 w-auto" />
+            <span className="text-[11px] font-bold tracking-[0.2em]">PROJECT</span>
           </a>
-          <span className="h-4 w-px bg-cream/30" />
+          <span className="h-7 w-px bg-cream/30" />
           <a
             href="https://voltage.cloud"
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1.5 opacity-60 transition-opacity hover:opacity-100"
+            className="flex items-center gap-2 opacity-80 transition-opacity hover:opacity-100"
           >
-            <span className="text-[9px] font-bold tracking-[0.2em]">POWERED BY</span>
+            <span className="text-[11px] font-bold tracking-[0.2em]">POWERED BY</span>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/voltage-white.svg" alt="Voltage" className="h-3 w-auto" />
+            <img src="/voltage-white.svg" alt="Voltage" className="h-5 w-auto" />
           </a>
         </div>
       </div>

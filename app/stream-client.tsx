@@ -161,6 +161,30 @@ export default function StreamClient() {
             <TickerText now={now} />
           </div>
         </div>
+        <div className="hidden shrink-0 items-center gap-4 md:flex">
+          <a
+            href="https://atlbitlab.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 opacity-60 transition-opacity hover:opacity-100"
+          >
+            <span className="text-[9px] font-bold tracking-[0.2em]">AN</span>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/atlbitlab-white.png" alt="ATL BitLab" className="h-5 w-auto" />
+            <span className="text-[9px] font-bold tracking-[0.2em]">PROJECT</span>
+          </a>
+          <span className="h-4 w-px bg-cream/30" />
+          <a
+            href="https://voltage.cloud"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 opacity-60 transition-opacity hover:opacity-100"
+          >
+            <span className="text-[9px] font-bold tracking-[0.2em]">POWERED BY</span>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/voltage-white.svg" alt="Voltage" className="h-3 w-auto" />
+          </a>
+        </div>
       </div>
 
       {modal.phase !== "closed" && (
@@ -387,6 +411,11 @@ function SubmitModal({
               COPY INVOICE · {modal.bolt11.slice(0, 28)}…
             </button>
             <div className="text-xs text-teal blink">waiting for payment…</div>
+            <div className="flex items-center gap-1.5 opacity-50">
+              <span className="text-[9px] font-bold tracking-[0.2em]">POWERED BY</span>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/voltage-white.svg" alt="Voltage" className="h-3 w-auto" />
+            </div>
           </div>
         )}
 

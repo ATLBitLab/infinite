@@ -127,7 +127,6 @@ export default function StreamClient() {
   // Live chat is feature-flagged (NEXT_PUBLIC_CHAT_ENABLED or ?chat=1) and
   // resolved on the client so the server render never guesses.
   const [chatOn, setChatOn] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const currentClipId = useRef<string | null>(null);
   const lastBootstrap = useRef(0);
@@ -281,7 +280,6 @@ export default function StreamClient() {
         !me || author.pubkey === me.pubkey
           ? ""
           : `${author.name} (funded by ${me.name})`.slice(0, 50);
-      setChatOpen(false);
       setModal({
         phase: "compose",
         idea: text.slice(0, 500),
@@ -294,10 +292,59 @@ export default function StreamClient() {
   );
 
   return (
-    <main className="relative flex h-dvh w-dvw overflow-hidden bg-void">
-    <div className="relative min-w-0 flex-1">
-      {/* ---- video ---- */}
-      <div className="scanlines absolute inset-0" onClick={enableSoundOnTap}>
+    <main className="relative flex h-dvh w-dvw flex-col overflow-hidden bg-void md:flex-row">
+    {/* Phones stack everything in one column: header, player, title, chat,
+        bottom bar. This wrapper is `display: contents` there, so its children
+        are laid out directly by <main>. From md up it becomes the full-bleed
+        player column and the same children turn into TV-style overlays. */}
+    <div className="contents md:relative md:block md:min-w-0 md:flex-1">
+      {/* ---- top bar ---- */}
+      <div className="relative z-10 flex shrink-0 items-center justify-between gap-2 px-3 py-2 md:absolute md:inset-x-0 md:top-0 md:p-4">
+        <div className="flex items-center gap-2 md:gap-3">
+          <span className="font-[family-name:var(--font-display)] text-xl leading-none text-mustard drop-shadow-[3px_3px_0_#e63946] md:text-2xl">
+            INFINITE
+          </span>
+          <span className="whitespace-nowrap rounded-sm border-2 border-danger bg-black/60 px-2 py-0.5 text-xs font-bold tracking-widest text-danger">
+            <span className="blink">●</span> {now?.rerun ? "RERUN" : "ON AIR"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 md:gap-3">
+          {now?.viewers && now.viewers.count > 0 && (
+            <div
+              className="hidden items-center gap-2 rounded-sm border-2 border-cream/30 bg-black/60 px-2 py-1 sm:flex"
+              title={now.viewers.sample.map((v) => v.name).join(", ")}
+            >
+              <div className="flex -space-x-2">
+                {now.viewers.sample.slice(0, 5).map((v) => (
+                  <ViewerAvatar key={v.id} viewer={v} />
+                ))}
+              </div>
+              <span className="whitespace-nowrap text-xs font-bold tracking-wider text-cream/80">
+                {now.viewers.count} watching
+              </span>
+            </div>
+          )}
+          {now?.clip && (
+            <ShareButton clipId={now.clip.id} title={now.clip.title} />
+          )}
+          <button
+            onClick={() => setSound(!soundOn)}
+            aria-label={soundOn ? "Turn sound off" : "Turn sound on"}
+            className="whitespace-nowrap rounded-sm border-2 border-cream/60 bg-black/60 px-3 py-1 text-xs font-bold tracking-widest hover:border-teal hover:text-teal"
+          >
+            <span className="md:hidden">{soundOn ? "🔊 ON" : "🔇 OFF"}</span>
+            <span className="hidden md:inline">
+              {soundOn ? "SOUND: ON" : "SOUND: OFF"}
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {/* ---- player ---- */}
+      <div
+        className="scanlines relative aspect-video w-full shrink-0 md:absolute md:inset-0 md:aspect-auto"
+        onClick={enableSoundOnTap}
+      >
         <video
           ref={videoRef}
           muted
@@ -306,13 +353,15 @@ export default function StreamClient() {
           className="h-full w-full object-contain"
         />
         {now?.clip && !soundOn && (
-          <div className="pointer-events-none absolute bottom-24 left-1/2 -translate-x-1/2 rounded-sm border-2 border-mustard bg-black/75 px-4 py-2 text-xs font-bold tracking-[0.2em] text-mustard">
-            🔇 TAP FOR SOUND
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="rounded-sm border-2 border-mustard bg-black/75 px-4 py-2 text-xs font-bold tracking-[0.2em] text-mustard">
+              🔇 TAP FOR SOUND
+            </div>
           </div>
         )}
         {!now?.clip && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
-            <div className="font-[family-name:var(--font-display)] text-5xl text-mustard md:text-7xl">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 md:gap-4">
+            <div className="font-[family-name:var(--font-display)] text-4xl text-mustard md:text-7xl">
               INFINITE
             </div>
             <div className="text-teal blink">● TUNING THE ANTENNA…</div>
@@ -321,52 +370,6 @@ export default function StreamClient() {
             </div>
           </div>
         )}
-      </div>
-
-      {/* ---- top bar ---- */}
-      <div className="absolute left-0 right-0 top-0 flex items-center justify-between p-4">
-        <div className="flex items-center gap-3">
-          <span className="font-[family-name:var(--font-display)] text-2xl leading-none text-mustard drop-shadow-[3px_3px_0_#e63946]">
-            INFINITE
-          </span>
-          <span className="whitespace-nowrap rounded-sm border-2 border-danger bg-black/60 px-2 py-0.5 text-xs font-bold tracking-widest text-danger">
-            <span className="blink">●</span> {now?.rerun ? "RERUN" : "ON AIR"}
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-2 md:gap-3">
-          {now?.viewers && now.viewers.count > 0 && (
-            <div
-              className="flex items-center gap-2 rounded-sm border-2 border-cream/30 bg-black/60 px-2 py-1"
-              title={now.viewers.sample.map((v) => v.name).join(", ")}
-            >
-              <div className="flex -space-x-2">
-                {now.viewers.sample.slice(0, 5).map((v) => (
-                  <ViewerAvatar key={v.id} viewer={v} />
-                ))}
-              </div>
-              <span className="text-xs font-bold tracking-wider text-cream/80">
-                {now.viewers.count} watching
-              </span>
-            </div>
-          )}
-          {now?.clip && (
-            <ShareButton clipId={now.clip.id} title={now.clip.title} />
-          )}
-          {chatOn && (
-            <button
-              onClick={() => setChatOpen(true)}
-              className="rounded-sm border-2 border-cream/60 bg-black/60 px-3 py-1 text-xs font-bold tracking-widest hover:border-teal hover:text-teal md:hidden"
-            >
-              CHAT
-            </button>
-          )}
-          <button
-            onClick={() => setSound(!soundOn)}
-            className="rounded-sm border-2 border-cream/60 bg-black/60 px-3 py-1 text-xs font-bold tracking-widest hover:border-teal hover:text-teal"
-          >
-            {soundOn ? "SOUND: ON" : "SOUND: OFF"}
-          </button>
-        </div>
       </div>
 
       {/* ---- activity toasts ---- */}
@@ -384,32 +387,55 @@ export default function StreamClient() {
 
       {/* ---- config error banner ---- */}
       {now?.configError && (
-        <div className="absolute left-0 right-0 top-14 mx-auto w-fit max-w-[90%] border-2 border-danger bg-black/85 px-4 py-2 text-center text-sm text-danger">
+        <div className="absolute left-0 right-0 top-14 z-10 mx-auto w-fit max-w-[90%] border-2 border-danger bg-black/85 px-4 py-2 text-center text-sm text-danger">
           ⚠ STATION MISCONFIGURED: {now.configError}
         </div>
       )}
 
       {/* ---- lower third ---- */}
-      <div className="absolute bottom-16 left-0 right-0 flex flex-col gap-2 px-4">
-        {now?.clip && (
+      {now?.clip && (
+        <div className="shrink-0 px-3 pt-3 md:absolute md:inset-x-0 md:bottom-16 md:px-4 md:pt-0">
           <div className="w-fit max-w-full border-l-8 border-orange bg-black/70 px-3 py-2">
             <div className="text-[10px] uppercase tracking-[0.3em] text-teal">
               Now showing
             </div>
-            <div className="font-[family-name:var(--font-display)] text-lg text-cream">
+            <div className="font-[family-name:var(--font-display)] text-base text-cream md:text-lg">
               {now.clip.title}
             </div>
             <div className="text-xs opacity-70">
               {now.clip.kind === "paid"
                 ? `submitted by ${now.clip.credit || "an anonymous weirdo"}`
                 : "written by the house AI"}
+              {now.viewers && now.viewers.count > 0 && (
+                <span className="sm:hidden"> · {now.viewers.count} watching</span>
+              )}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {/* ---- phone-only: up next fills the space under the player when chat is off ---- */}
+      {!chatOn && (
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 md:hidden">
+          {now?.upNext && now.upNext.length > 0 && (
+            <>
+              <div className="mb-1 text-[10px] uppercase tracking-[0.3em] text-teal">
+                Up next
+              </div>
+              <ol className="flex flex-col gap-1 text-sm">
+                {now.upNext.map((c, i) => (
+                  <li key={c.id} className="truncate">
+                    <span className="text-cream/40">{i + 1}.</span> {c.title}
+                  </li>
+                ))}
+              </ol>
+            </>
+          )}
+        </div>
+      )}
 
       {/* ---- bottom bar ---- */}
-      <div className="absolute bottom-0 left-0 right-0 flex items-center gap-3 border-t-4 border-mustard bg-panel px-4 py-3">
+      <div className="order-last flex shrink-0 items-center gap-3 border-t-4 border-mustard bg-panel px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:absolute md:inset-x-0 md:bottom-0 md:order-none md:px-4">
         <button
           onClick={() =>
             setModal({
@@ -478,8 +504,6 @@ export default function StreamClient() {
     {chatOn && identity && (
       <ChatPanel
         identity={identity}
-        open={chatOpen}
-        onClose={() => setChatOpen(false)}
         onFund={fundFromChat}
         fundDisabled={Boolean(now?.falPaused)}
       />
@@ -1000,14 +1024,14 @@ function SubmitModal({
               placeholder="e.g. A maximalist knight refuses to pay a troll's toll because the bridge is a custodial solution…"
               rows={4}
               maxLength={500}
-              className="w-full resize-none border-2 border-teal/60 bg-void p-2 text-sm outline-none focus:border-teal"
+              className="w-full resize-none border-2 border-teal/60 bg-void p-2 text-base outline-none focus:border-teal md:text-sm"
             />
             <input
               value={modal.credit}
               onChange={(e) => setModal({ ...modal, credit: e.target.value })}
               placeholder={`credit (default: ${identity?.name ?? "anonymous"})`}
               maxLength={50}
-              className="w-full border-2 border-teal/60 bg-void p-2 text-sm outline-none focus:border-teal"
+              className="w-full border-2 border-teal/60 bg-void p-2 text-base outline-none focus:border-teal md:text-sm"
             />
             <div className="border-2 border-teal/60 bg-void p-2">
               <div className="mb-1 flex items-baseline justify-between text-xs">

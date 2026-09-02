@@ -20,15 +20,10 @@ export interface ChatAuthor {
 
 export default function ChatPanel({
   identity,
-  open,
-  onClose,
   onFund,
   fundDisabled,
 }: {
   identity: Identity;
-  /** Mobile: whether the overlay is showing. Desktop always shows it. */
-  open: boolean;
-  onClose: () => void;
   onFund: (text: string, author: ChatAuthor) => void;
   fundDisabled: boolean;
 }) {
@@ -68,7 +63,7 @@ export default function ChatPanel({
   useEffect(() => {
     const el = list.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
-  }, [messages, open]);
+  }, [messages]);
 
   const onScroll = useCallback(() => {
     const el = list.current;
@@ -112,7 +107,7 @@ export default function ChatPanel({
 
   return (
     <aside
-      className={`${open ? "flex" : "hidden"} absolute inset-0 z-[5] w-full flex-col bg-panel md:static md:z-auto md:flex md:w-80 md:shrink-0 md:border-l-4 md:border-mustard`}
+      className="flex min-h-0 min-w-0 flex-1 flex-col border-t-4 border-mustard bg-panel md:w-80 md:flex-none md:border-t-0 md:border-l-4"
       aria-label="Live chat"
     >
       <div className="flex items-center justify-between border-b-2 border-cream/20 px-3 py-2">
@@ -127,24 +122,15 @@ export default function ChatPanel({
             {relays > 0 ? "● NOSTR" : "○ CONNECTING"}
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          {muted.size > 0 && (
-            <button
-              onClick={unmuteAll}
-              className="text-[10px] tracking-wider text-cream/50 hover:text-teal"
-              title="Clear your mute list"
-            >
-              {muted.size} MUTED
-            </button>
-          )}
+        {muted.size > 0 && (
           <button
-            onClick={onClose}
-            aria-label="Close chat"
-            className="border-2 border-cream/40 px-2 text-sm hover:border-danger hover:text-danger md:hidden"
+            onClick={unmuteAll}
+            className="text-[10px] tracking-wider text-cream/50 hover:text-teal"
+            title="Clear your mute list"
           >
-            ✕
+            {muted.size} MUTED
           </button>
-        </div>
+        )}
       </div>
 
       <div ref={list} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto py-1">
@@ -207,7 +193,7 @@ export default function ChatPanel({
             maxLength={CHAT_MAX_LEN}
             placeholder={`Yell at the TV as ${identity.name}…`}
             aria-label="Chat message"
-            className="min-w-0 flex-1 border-2 border-teal/60 bg-void px-2 py-1.5 text-sm outline-none focus:border-teal"
+            className="min-w-0 flex-1 border-2 border-teal/60 bg-void px-2 py-1.5 text-base outline-none focus:border-teal md:text-sm"
           />
           <button
             type="submit"

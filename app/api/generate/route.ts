@@ -2,9 +2,12 @@ import { randomUUID } from "crypto";
 import {
   FAL_LOCK_FLAG,
   FAL_LOCK_TTL,
+  extractLastFrame,
   falErrorDetail,
   generateVideo,
+  generateVideoFromImage,
   isBalanceLock,
+  mergeVideos,
 } from "@/lib/fal";
 import { generateIdea } from "@/lib/llm";
 import { moderateAndExpand } from "@/lib/llm";
@@ -53,21 +56,42 @@ export async function POST(request: Request) {
 }
 
 /** Run the fal generation for a paid job and schedule the clip.
+ * Multi-scene episodes are chained for continuity — each scene's first frame
+ * is the previous scene's last frame — then merged into one mp4, so one
+ * purchase stays one Clip (players and /c/<id> permalinks depend on that).
  * Throws on generation failure (caller decides defer-vs-fail). */
 async function runGeneration(job: Job) {
   const store = getStore();
   job.status = "generating";
   await store.putJob(job);
 
-  const video = await generateVideo(job.videoPrompt, job.duration);
+  const prompts = job.scenePrompts?.length ? job.scenePrompts : [job.videoPrompt];
+  const lengths = job.segmentDurations?.length === prompts.length
+    ? job.segmentDurations
+    : [job.duration ?? config.clipDuration];
+
+  const sceneUrls: string[] = [];
+  let lastFrameUrl: string | null = null;
+  for (let i = 0; i < prompts.length; i++) {
+    const video = lastFrameUrl
+      ? await generateVideoFromImage(prompts[i], lastFrameUrl, lengths[i])
+      : await generateVideo(prompts[i], lengths[i]);
+    sceneUrls.push(video.url);
+    if (i < prompts.length - 1) {
+      lastFrameUrl = await extractLastFrame(video.url);
+    }
+  }
+  const videoUrl = await mergeVideos(sceneUrls);
+  const totalDuration = lengths.reduce((sum, s) => sum + s, 0);
+
   const clip = await scheduleClip({
     id: randomUUID(),
     kind: "paid",
     idea: job.idea,
     title: job.title,
     videoPrompt: job.videoPrompt,
-    videoUrl: video.url,
-    duration: video.duration,
+    videoUrl,
+    duration: totalDuration,
     credit: job.credit,
     createdAt: Date.now(),
   } satisfies Omit<Clip, "airAt">);

@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { moderateAndExpand } from "@/lib/llm";
 import { createInvoice } from "@/lib/voltage";
-import { clampDuration, submissionPriceSats } from "@/lib/price";
+import { clampDuration, splitSegments, submissionPriceSats } from "@/lib/price";
 import { getStore, persistenceMisconfigured } from "@/lib/store";
 import { FAL_LOCK_FLAG } from "@/lib/fal";
 import { config } from "@/lib/config";
@@ -45,7 +45,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const moderation = await moderateAndExpand(idea, duration);
+    const segments = splitSegments(duration);
+    const moderation = await moderateAndExpand(idea, segments);
     if (!moderation.allowed) {
       return Response.json({ rejected: true, reason: moderation.reason }, { status: 200 });
     }
@@ -65,6 +66,8 @@ export async function POST(request: Request) {
       paymentId: jobId,
       sats,
       duration,
+      scenePrompts: moderation.scenePrompts,
+      segmentDurations: segments,
       createdAt: Date.now(),
     };
     await store.putJob(job);

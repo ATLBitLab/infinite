@@ -5,8 +5,12 @@ export const config = {
   // fal.ai — video generation
   falKey: process.env.FAL_KEY ?? "",
   falModel: process.env.FAL_MODEL ?? "minimax/h3-max/text-to-video",
-  clipDuration: intEnv("CLIP_DURATION", 15), // max seconds, 5–15
+  clipDuration: intEnv("CLIP_DURATION", 15), // max seconds per fal generation, 5–15
   clipMinDuration: intEnv("CLIP_MIN_DURATION", 5), // shortest purchasable clip
+  // Longest purchasable episode. Above clipDuration, an episode is written as
+  // multiple scenes, chained via image-to-video for continuity, and merged
+  // into a single mp4 (one purchase = one Clip = one permalink).
+  maxTotalDuration: intEnv("MAX_TOTAL_DURATION", 45),
   clipResolution: (process.env.CLIP_RESOLUTION ?? "768P") as "480P" | "768P",
 
   // Anthropic — ideas, moderation, prompt expansion

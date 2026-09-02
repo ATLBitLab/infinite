@@ -11,6 +11,9 @@ export interface ModerationResult {
   reason: string;
   title: string;
   videoPrompt: string;
+  /** One prompt per scene; single-scene clips have exactly one entry.
+   * Multi-scene episodes share a character sheet for visual continuity. */
+  scenePrompts: string[];
 }
 
 const VIBE = `The stream is "INFINITE" — an endless AI cartoon channel that pokes fun at
@@ -48,34 +51,56 @@ function parseJson<T>(raw: string): T {
   return JSON.parse(match[0]) as T;
 }
 
-/** Moderate a submitted idea and expand it into a video prompt in one call. */
+/** Moderate a submitted idea and write the episode in one call.
+ * `segments` holds the scene lengths in seconds — one entry for a normal
+ * clip, several for a long episode rendered as chained scenes. */
 export async function moderateAndExpand(
   idea: string,
-  durationSec: number = config.clipDuration,
+  segments: number[] = [config.clipDuration],
 ): Promise<ModerationResult> {
-  if (mockMode.llm) return mockModerate(idea);
+  if (mockMode.llm) return mockModerate(idea, segments);
+
+  const multi = segments.length > 1;
+  const sceneSpec = multi
+    ? `"characterSheet": string, // 1-2 sentences naming and visually describing the recurring characters/setting, reused verbatim in every scene render
+  "scenes": [string]        // exactly ${segments.length} scene prompts, one per array entry. Scene i is animated for these lengths in order: ${segments.join("s, ")}s. Together they form ONE escalating sketch; each scene starts EXACTLY where the previous ended (the renders are chained frame-to-frame), so write the beats as continuous action with an escalating gag and a punchline in the final scene. Each entry: 2-4 sentences of concrete visual action plus any short spoken line.`
+    : `"videoPrompt": string     // 2-4 sentences describing ONE self-contained comedic scene for a ${segments[0]}-second animated clip: characters, setting, action, a visual punchline. Pace it for ${segments[0]} seconds. Include any short spoken line or sound gag. Do not describe the art style; that is appended separately.`;
 
   const system = `${VIBE}
 
 You are the channel's standards-and-practices editor AND head writer. Given a viewer-submitted
-idea, decide whether it fits the channel, and if it does, write the video generation prompt.
+idea, decide whether it fits the channel, and if it does, write the video generation prompt${multi ? "s" : ""}.
 
 Respond with ONLY a JSON object:
 {
   "allowed": boolean,       // false for mean-spirited, hateful, harassing, sexual, gory, illegal, or targeted-at-a-private-person content
   "reason": string,         // one playful sentence shown to the submitter (esp. when rejected)
   "title": string,          // punchy on-screen title, max 8 words
-  "videoPrompt": string     // 2-4 sentences describing ONE self-contained comedic scene for a ${durationSec}-second animated clip: characters, setting, action, a visual punchline. Pace it for ${durationSec} seconds. Include any short spoken line or sound gag. Do not describe the art style; that is appended separately.
+  ${sceneSpec}
 }`;
 
   const result = await callClaude(system, `Viewer idea: ${JSON.stringify(idea)}`);
-  const parsed = parseJson<ModerationResult>(result);
-  return {
+  const parsed = parseJson<
+    ModerationResult & { characterSheet?: string; scenes?: string[] }
+  >(result);
+
+  const base = {
     allowed: Boolean(parsed.allowed),
     reason: String(parsed.reason ?? ""),
     title: String(parsed.title ?? "Untitled").slice(0, 80),
-    videoPrompt: `${String(parsed.videoPrompt ?? "")} ${STYLE_PROMPT}`.trim(),
   };
+  if (multi) {
+    const sheet = String(parsed.characterSheet ?? "").trim();
+    const scenes = (Array.isArray(parsed.scenes) ? parsed.scenes : [])
+      .slice(0, segments.length)
+      .map((s) => `${String(s)} ${sheet} ${STYLE_PROMPT}`.trim());
+    if (base.allowed && scenes.length !== segments.length) {
+      throw new Error("episode writer returned wrong scene count");
+    }
+    return { ...base, videoPrompt: scenes[0] ?? "", scenePrompts: scenes };
+  }
+  const videoPrompt = `${String(parsed.videoPrompt ?? "")} ${STYLE_PROMPT}`.trim();
+  return { ...base, videoPrompt, scenePrompts: [videoPrompt] };
 }
 
 /** Generate a fresh house idea (also used for the "give me an idea" button). */
@@ -101,16 +126,20 @@ a scene, not a topic. Respond with ONLY a JSON object:
 
 const BLOCKLIST = ["kill", "murder", "nazi", "rape", "porn", "sex", "gore"];
 
-function mockModerate(idea: string): ModerationResult {
+function mockModerate(idea: string, segments: number[]): ModerationResult {
   const lower = idea.toLowerCase();
   const blocked = BLOCKLIST.some((w) => lower.includes(w));
+  const videoPrompt = `${idea}. ${STYLE_PROMPT}`;
   return {
     allowed: !blocked,
     reason: blocked
       ? "Standards & Practices says: keep it playful, champ."
       : "Greenlit by a mock producer (no LLM key set).",
     title: idea.split(/\s+/).slice(0, 6).join(" "),
-    videoPrompt: `${idea}. ${STYLE_PROMPT}`,
+    videoPrompt,
+    scenePrompts: segments.map((_, i) =>
+      segments.length > 1 ? `${videoPrompt} (scene ${i + 1})` : videoPrompt,
+    ),
   };
 }
 

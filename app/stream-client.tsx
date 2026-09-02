@@ -290,7 +290,7 @@ export default function StreamClient() {
               phase: "compose",
               idea: "",
               credit: "",
-              duration: now?.durations?.max ?? 15,
+              duration: 15,
               busy: false,
             })
           }
@@ -614,7 +614,12 @@ function SubmitModal({
               />
               <div className="flex justify-between text-[10px] text-cream/50">
                 <span>{now?.durations?.min ?? 5}s · quick gag</span>
-                <span>{now?.durations?.max ?? 15}s · full bit</span>
+                <span>{now?.durations?.max ?? 15}s · full episode</span>
+              </div>
+              <div className="mt-1 text-[10px] text-cream/50">
+                {modal.duration > 15
+                  ? `rendered as ${Math.ceil(modal.duration / 15)} chained scenes, cut together`
+                  : "single continuous shot"}
               </div>
             </div>
             {modal.error && <div className="text-sm text-danger">{modal.error}</div>}
@@ -654,7 +659,7 @@ function SubmitModal({
                   phase: "compose",
                   idea: "",
                   credit: "",
-                  duration: now?.durations?.max ?? 15,
+                  duration: 15,
                   busy: false,
                 })
               }
@@ -710,7 +715,8 @@ function SubmitModal({
             <p className="text-center text-sm opacity-80">
               Paid. The render farm is drawing{" "}
               <span className="text-mustard">“{modal.title}”</span> frame by
-              frame. ~15 seconds.
+              frame — seconds for a short clip, a couple of minutes for a
+              multi-scene episode.
             </p>
           </div>
         )}

@@ -23,6 +23,13 @@ export function isBalanceLock(err: unknown): boolean {
   return e?.status === 403 && /locked|balance/i.test(detail);
 }
 
+/** Human-readable description of a fal error, for ops surfaces. */
+export function falErrorDetail(err: unknown): string {
+  const e = err as { status?: number; body?: { detail?: unknown }; message?: string };
+  const detail = typeof e?.body?.detail === "string" ? e.body.detail : "";
+  return `${e?.status ?? ""} ${detail || e?.message || String(err)}`.trim().slice(0, 300);
+}
+
 let configured = false;
 function ensureConfigured() {
   if (!configured) {

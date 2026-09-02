@@ -18,13 +18,14 @@ export async function GET(request: Request) {
     .slice(0, 30);
   if (vid) await store.touchPresence(vid, vn || "viewer");
 
-  const [now, priceSats, falPaused, viewers, activity] = await Promise.all([
+  const [now, priceSats, falLock, viewers, activity] = await Promise.all([
     nowPlaying(),
     submissionPriceSats(),
-    store.getFlag(FAL_LOCK_FLAG),
+    store.getFlagInfo(FAL_LOCK_FLAG),
     store.getPresence(),
     store.getActivity(),
   ]);
+  const falPaused = Boolean(falLock);
   const misconfigured = persistenceMisconfigured();
   return Response.json({
     ...now,
@@ -33,6 +34,8 @@ export async function GET(request: Request) {
     priceSats,
     mockMode,
     falPaused,
+    falPausedReason: falLock?.reason || undefined,
+    falPausedAt: falLock?.ts || undefined,
     viewers,
     activity,
     store: usingRedis() ? "redis" : "memory",

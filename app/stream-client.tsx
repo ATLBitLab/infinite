@@ -21,6 +21,9 @@ type ModalState =
 
 const POLL_MS = 8000;
 
+/** BIP-177 display: sats denominated with the bitcoin symbol, e.g. ₿2,600. */
+const fmtBtc = (sats: number) => `₿${sats.toLocaleString("en-US")}`;
+
 export default function StreamClient() {
   const [now, setNow] = useState<NowResponse | null>(null);
   const [soundOn, setSoundOn] = useState(false);
@@ -150,7 +153,7 @@ export default function StreamClient() {
           }
           className="shrink-0 rounded-sm border-2 border-orange bg-orange px-4 py-2 font-[family-name:var(--font-display)] text-sm text-void hover:bg-mustard hover:border-mustard"
         >
-          ADD TO STREAM · {now ? `${now.priceSats.toLocaleString()} sats` : "…"}
+          ADD TO STREAM · {now ? fmtBtc(now.priceSats) : "…"}
         </button>
         <div className="relative flex-1 overflow-hidden whitespace-nowrap text-sm text-teal">
           <div className="ticker inline-block">
@@ -170,7 +173,7 @@ export default function StreamClient() {
 function TickerText({ now }: { now: NowResponse | null }) {
   const upNext = now?.upNext?.length
     ? now.upNext.map((c) => `UP NEXT: ${c.title}`).join("  ★  ")
-    : "PAY SATS, GET CARTOONS";
+    : "PAY BITCOIN, GET CARTOONS";
   return (
     <span className="mx-4">
       {upNext} ★ AN ENDLESS AI CARTOON CHANNEL ROASTING BITCOIN, FREEDOM TECH
@@ -204,7 +207,7 @@ function SubmitModal({
         }
         if (data.status === "failed") {
           clearInterval(t);
-          setModal({ phase: "rejected", reason: "Payment expired or failed. No sats were harmed." });
+          setModal({ phase: "rejected", reason: "Payment expired or failed. No bitcoin was harmed." });
         }
       } catch {
         // keep polling
@@ -349,7 +352,7 @@ function SubmitModal({
                 disabled={modal.busy || modal.idea.trim().length < 5}
                 className="flex-1 border-2 border-orange bg-orange px-3 py-2 text-xs font-bold tracking-wider text-void hover:bg-mustard hover:border-mustard disabled:opacity-40"
               >
-                {modal.busy ? "CHECKING…" : `PAY ${now?.priceSats.toLocaleString() ?? "…"} SATS`}
+                {modal.busy ? "CHECKING…" : `PAY ${now ? fmtBtc(now.priceSats) : "…"}`}
               </button>
             </div>
           </div>
@@ -371,7 +374,7 @@ function SubmitModal({
           <div className="flex flex-col items-center gap-3">
             <p className="text-center text-sm">
               <span className="text-mustard">“{modal.title}”</span> is greenlit.
-              Pay <b>{modal.sats.toLocaleString()} sats</b> to roll cameras.
+              Pay <b>{fmtBtc(modal.sats)}</b> to roll cameras.
             </p>
             <div className="bg-white p-3">
               <QRCodeSVG value={`lightning:${modal.bolt11}`} size={200} />

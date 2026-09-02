@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** Share a permalink to one clip. Uses the native share sheet where the
- * browser has one (phones), otherwise copies the link to the clipboard. */
+/** Copy a permalink to one clip and confirm with a toast. Deliberately no
+ * navigator.share: on Safari the share sheet, its bookmark prompt, and the
+ * fallback alert stacked into three steps for what should be one click. */
 export default function ShareButton({
   clipId,
   title,
@@ -13,44 +14,67 @@ export default function ShareButton({
   title: string;
   className?: string;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
   }, []);
 
-  const share = useCallback(async () => {
+  const show = useCallback((msg: string) => {
+    setToast(msg);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setToast(null), 2200);
+  }, []);
+
+  const share = useCallback(() => {
     const url = `${window.location.origin}/c/${clipId}`;
-    const text = `“${title}” on INFINITE, the endless cartoon channel`;
-    if (typeof navigator.share === "function") {
-      try {
-        await navigator.share({ title: text, url });
-        return;
-      } catch {
-        // dismissed or unsupported payload — fall through to copy
-      }
+    // Call writeText synchronously inside the click so Safari still counts
+    // it as user-initiated; only react to the result afterwards.
+    const viaApi = navigator.clipboard?.writeText(url);
+    if (viaApi) {
+      viaApi
+        .then(() => show("LINK COPIED TO CLIPBOARD"))
+        .catch(() => (legacyCopy(url) ? show("LINK COPIED TO CLIPBOARD") : show(url)));
+    } else {
+      legacyCopy(url) ? show("LINK COPIED TO CLIPBOARD") : show(url);
     }
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => setCopied(false), 2000);
-    } catch {
-      window.prompt("Copy this link", url);
-    }
-  }, [clipId, title]);
+  }, [clipId, show]);
 
   return (
-    <button
-      onClick={share}
-      aria-label="Share this cartoon"
-      className={`rounded-sm border-2 px-3 py-1 text-xs font-bold tracking-widest transition-colors ${
-        copied
-          ? "border-mustard bg-mustard text-void"
-          : "border-cream/60 bg-black/60 hover:border-teal hover:text-teal"
-      } ${className}`}
-    >
-      {copied ? "LINK COPIED" : "SHARE"}
-    </button>
+    <>
+      <button
+        onClick={share}
+        aria-label={`Copy a link to “${title}”`}
+        className={`rounded-sm border-2 border-cream/60 bg-black/60 px-3 py-1 text-xs font-bold tracking-widest hover:border-teal hover:text-teal ${className}`}
+      >
+        SHARE
+      </button>
+      {toast && (
+        <div
+          role="status"
+          className="pointer-events-none fixed left-1/2 top-16 z-50 -translate-x-1/2 whitespace-nowrap rounded-sm border-2 border-mustard bg-black/85 px-4 py-2 text-xs font-bold tracking-[0.2em] text-mustard"
+        >
+          {toast}
+        </div>
+      )}
+    </>
   );
+}
+
+/** Old-school copy for browsers that refuse the async clipboard API. */
+function legacyCopy(text: string): boolean {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
 }

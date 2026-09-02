@@ -135,10 +135,10 @@ export default async function Image() {
           <div
             style={{
               fontFamily: "Bungee",
-              fontSize: 176,
+              fontSize: 160,
               lineHeight: 1,
               color: C.mustard,
-              textShadow: `8px 8px 0 ${C.danger}`,
+              textShadow: `7px 7px 0 ${C.danger}`,
               marginLeft: -6,
             }}
           >
@@ -170,7 +170,7 @@ export default async function Image() {
         </div>
 
         {/* lower third */}
-        <div style={{ display: "flex", margin: "0 60px 0" }}>
+        <div style={{ display: "flex", margin: "22px 60px 0" }}>
           <div
             style={{
               display: "flex",
@@ -205,20 +205,20 @@ export default async function Image() {
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 18,
-            padding: "26px 60px 34px",
-            fontSize: 14,
-            letterSpacing: 4,
+            gap: 22,
+            padding: "30px 60px 40px",
+            fontSize: 20,
+            letterSpacing: 5,
             color: C.cream,
-            opacity: 0.7,
+            opacity: 0.85,
           }}
         >
           <div style={{ display: "flex" }}>AN</div>
-          <img src={atlSrc} width={82} height={30} alt="" />
+          <img src={atlSrc} width={142} height={52} alt="" />
           <div style={{ display: "flex" }}>PROJECT</div>
-          <div style={{ width: 2, height: 22, background: C.cream, opacity: 0.4 }} />
+          <div style={{ width: 2, height: 36, background: C.cream, opacity: 0.4 }} />
           <div style={{ display: "flex" }}>POWERED BY</div>
-          <img src={voltageSrc} width={109} height={18} alt="" />
+          <img src={voltageSrc} width={218} height={36} alt="" />
         </div>
 
         {/* CRT scanlines over everything */}

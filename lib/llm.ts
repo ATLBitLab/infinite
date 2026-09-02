@@ -4,7 +4,10 @@ import { config, mockMode, STYLE_PROMPT } from "./config";
 /** LLM layer: idea generation, content moderation, and video-prompt expansion.
  * Falls back to canned behavior when ANTHROPIC_API_KEY is unset. */
 
-const MODEL = "claude-opus-5";
+/** Cheapest/fastest model by default (moderation + short comedy prompts
+ * don't need frontier reasoning). Override with LLM_MODEL for a smarter
+ * writers' room, e.g. LLM_MODEL=claude-opus-5. */
+const MODEL = process.env.LLM_MODEL ?? "claude-haiku-4-5";
 
 export interface ModerationResult {
   allowed: boolean;
@@ -29,20 +32,26 @@ function getClient(): Anthropic {
 }
 
 async function callClaude(system: string, user: string): Promise<string> {
-  const response = await getClient().beta.messages.create({
+  const client = getClient();
+  const base = {
     model: MODEL,
-    // Thinking is on by default and counts against max_tokens: a low cap
-    // gets fully consumed by reasoning on trickier ideas, leaving NO text
-    // block at all ("no JSON in model response"). Keep generous headroom.
-    max_tokens: 16000,
-    // Bound thinking depth: these are short creative calls inside a 60s
-    // serverless budget; unbounded reasoning is where the latency lives.
-    output_config: { effort: "medium" },
-    betas: ["server-side-fallback-2026-06-01"],
-    fallbacks: [{ model: "claude-opus-4-8" }],
+    // On thinking-by-default models (Opus 5), reasoning counts against
+    // max_tokens: a low cap gets fully consumed before any text appears
+    // ("no JSON in model response"). Keep generous headroom either way.
+    max_tokens: 8000,
     system,
-    messages: [{ role: "user", content: user }],
-  });
+    messages: [{ role: "user", content: user }] as Anthropic.MessageParam[],
+  };
+  // effort + server-side fallbacks only exist on the Opus 5 tier; Haiku
+  // rejects them (and doesn't think unprompted, so it's fast as-is).
+  const response = MODEL.includes("opus-5")
+    ? await client.beta.messages.create({
+        ...base,
+        output_config: { effort: "medium" },
+        betas: ["server-side-fallback-2026-06-01"],
+        fallbacks: [{ model: "claude-opus-4-8" }],
+      })
+    : await client.messages.create(base);
   if (response.stop_reason === "refusal") {
     throw new Error("model_refused");
   }

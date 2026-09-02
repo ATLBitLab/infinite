@@ -13,10 +13,27 @@ const spaceGrotesk = Space_Grotesk({
   variable: "--font-body",
 });
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://infinite.atlbitlab.com";
+const TITLE = "INFINITE — the endless cartoon channel";
+const DESCRIPTION =
+  "An infinite AI-generated cartoon livestream roasting bitcoin, freedom tech, and AI. Pay bitcoin, add your idea to the broadcast.";
+
 export const metadata: Metadata = {
-  title: "INFINITE — the endless cartoon channel",
-  description:
-    "An infinite AI-generated cartoon livestream roasting bitcoin, freedom tech, and AI. Pay bitcoin, add your idea to the broadcast.",
+  metadataBase: new URL(SITE_URL),
+  title: TITLE,
+  description: DESCRIPTION,
+  openGraph: {
+    type: "website",
+    url: "/",
+    siteName: "INFINITE",
+    title: TITLE,
+    description: DESCRIPTION,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: TITLE,
+    description: DESCRIPTION,
+  },
 };
 
 export default function RootLayout({

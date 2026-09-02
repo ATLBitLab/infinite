@@ -16,7 +16,7 @@ const spaceGrotesk = Space_Grotesk({
 export const metadata: Metadata = {
   title: "INFINITE — the endless cartoon channel",
   description:
-    "An infinite AI-generated cartoon livestream roasting bitcoin, freedom tech, and AI. Pay sats, add your idea to the broadcast.",
+    "An infinite AI-generated cartoon livestream roasting bitcoin, freedom tech, and AI. Pay bitcoin, add your idea to the broadcast.",
 };
 
 export default function RootLayout({

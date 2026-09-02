@@ -31,7 +31,13 @@ function getClient(): Anthropic {
 async function callClaude(system: string, user: string): Promise<string> {
   const response = await getClient().beta.messages.create({
     model: MODEL,
-    max_tokens: 1024,
+    // Thinking is on by default and counts against max_tokens: a low cap
+    // gets fully consumed by reasoning on trickier ideas, leaving NO text
+    // block at all ("no JSON in model response"). Keep generous headroom.
+    max_tokens: 16000,
+    // Bound thinking depth: these are short creative calls inside a 60s
+    // serverless budget; unbounded reasoning is where the latency lives.
+    output_config: { effort: "medium" },
     betas: ["server-side-fallback-2026-06-01"],
     fallbacks: [{ model: "claude-opus-4-8" }],
     system,
@@ -40,6 +46,9 @@ async function callClaude(system: string, user: string): Promise<string> {
   if (response.stop_reason === "refusal") {
     throw new Error("model_refused");
   }
+  if (response.stop_reason === "max_tokens") {
+    throw new Error("model response truncated at max_tokens");
+  }
   const text = response.content.find((b) => b.type === "text");
   return text && "text" in text ? text.text : "";
 }
@@ -47,7 +56,13 @@ async function callClaude(system: string, user: string): Promise<string> {
 /** Pull the first JSON object out of a model response, tolerating fences. */
 function parseJson<T>(raw: string): T {
   const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("no JSON in model response");
+  if (!match) {
+    // Log a snippet so prod logs show WHAT came back, not just that it failed.
+    console.error(
+      `no JSON in model response (len=${raw.length}): ${raw.slice(0, 200)}`,
+    );
+    throw new Error("no JSON in model response");
+  }
   return JSON.parse(match[0]) as T;
 }
 

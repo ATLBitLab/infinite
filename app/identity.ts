@@ -20,6 +20,12 @@ function hexToBytes(hex: string): Uint8Array {
 const SK_KEY = "infinite_nostr_sk";
 export const SITE_URL = "https://infinite.atlbitlab.com";
 
+// ATL BitLab's nostr identity — tagged on every purchase note.
+const ATLBITLAB_NPUB =
+  "npub1cst99sheckxrllnh9pw093mls775tdx80x99mq096pkl2t9r9swqsugekj";
+const ATLBITLAB_HEX =
+  "c41652c2f9c58c3ffe77285cf2c77f87bd45b4c7798a5d81e5d06df52ca32c1c";
+
 export const RELAYS = [
   "wss://relay.damus.io",
   "wss://nos.lol",
@@ -101,8 +107,11 @@ export function broadcastPurchase(title: string): void {
       {
         kind: 1,
         created_at: Math.floor(Date.now() / 1000),
-        tags: [["r", SITE_URL]],
-        content: `Just added "${title}" to INFINITE — the endless AI cartoon channel 📺⚡ ${SITE_URL}`,
+        tags: [
+          ["r", SITE_URL],
+          ["p", ATLBITLAB_HEX],
+        ],
+        content: `Just added "${title}" to INFINITE — the endless AI cartoon channel by nostr:${ATLBITLAB_NPUB} 📺⚡ ${SITE_URL}`,
       },
       sk,
     );

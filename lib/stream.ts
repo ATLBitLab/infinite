@@ -83,3 +83,11 @@ export async function nowPlaying(): Promise<NowPlaying> {
   // Unreachable, but keep the type-checker honest.
   return empty;
 }
+
+/** Look up a single clip by id for the shareable /c/[id] page. Reads the
+ * library directly and never touches the broadcast schedule. */
+export async function findClip(id: string): Promise<Clip | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
+  const clips = await getStore().getClips();
+  return clips.find((c) => c.id === id) ?? null;
+}

@@ -9,6 +9,7 @@ import {
   loadIdentity,
   type Identity,
 } from "./identity";
+import ShareButton from "./share-button";
 
 interface NowResponse extends NowPlaying {
   priceSats: number;
@@ -229,6 +230,9 @@ export default function StreamClient() {
                 {now.viewers.count} watching
               </span>
             </div>
+          )}
+          {now?.clip && (
+            <ShareButton clipId={now.clip.id} title={now.clip.title} />
           )}
           <button
             onClick={() => setSound(!soundOn)}

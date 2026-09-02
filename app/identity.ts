@@ -65,7 +65,9 @@ function hashHex(hex: string): number {
 
 export function nameForPubkey(pubkey: string): string {
   const h = hashHex(pubkey);
-  return `${ADJECTIVES[h % ADJECTIVES.length]} ${ANIMALS[(h >> 8) % ANIMALS.length]}`;
+  // >>> keeps the shifted hash unsigned; >> can go negative and make the
+  // modulo negative, yielding "nimble undefined"-style names.
+  return `${ADJECTIVES[h % ADJECTIVES.length]} ${ANIMALS[(h >>> 8) % ANIMALS.length]}`;
 }
 
 export function hueForId(id: string): number {

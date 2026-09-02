@@ -63,6 +63,66 @@ export async function generateVideo(
   return { url: data.video.url, duration: durationSec };
 }
 
+const FAL_I2V_MODEL = process.env.FAL_I2V_MODEL ?? "minimax/h3-max/image-to-video";
+
+/** Continue a scene: the previous scene's last frame becomes this scene's
+ * first frame, keeping characters and setting continuous across the cut. */
+export async function generateVideoFromImage(
+  prompt: string,
+  imageUrl: string,
+  durationSec: number,
+): Promise<GeneratedVideo> {
+  if (mockMode.fal) return mockVideo();
+
+  ensureConfigured();
+  const result = await fal.subscribe(FAL_I2V_MODEL, {
+    input: {
+      prompt,
+      image_url: imageUrl,
+      duration: durationSec,
+      resolution: config.clipResolution,
+      prompt_expansion_mode: "balanced",
+    },
+    logs: false,
+  });
+  const data = result.data as { video?: { url?: string } };
+  if (!data?.video?.url) {
+    throw new Error("fal i2v returned no video url");
+  }
+  return { url: data.video.url, duration: durationSec };
+}
+
+/** Grab the last frame of a rendered scene (serverless, via fal's ffmpeg). */
+export async function extractLastFrame(videoUrl: string): Promise<string> {
+  if (mockMode.fal) return "https://interactive-examples.mdn.mozilla.net/media/cc0-images/grapefruit-slice-332-332.jpg";
+
+  ensureConfigured();
+  const result = await fal.subscribe("fal-ai/ffmpeg-api/extract-frame", {
+    input: { video_url: videoUrl, frame_type: "last" },
+    logs: false,
+  });
+  const data = result.data as { image?: { url?: string }; url?: string };
+  const url = data?.image?.url ?? data?.url;
+  if (!url) throw new Error("fal extract-frame returned no image url");
+  return url;
+}
+
+/** Stitch scene renders into one contiguous mp4 (one purchase = one Clip). */
+export async function mergeVideos(videoUrls: string[]): Promise<string> {
+  if (videoUrls.length === 1) return videoUrls[0];
+  if (mockMode.fal) return videoUrls[0];
+
+  ensureConfigured();
+  const result = await fal.subscribe("fal-ai/ffmpeg-api/merge-videos", {
+    input: { video_urls: videoUrls },
+    logs: false,
+  });
+  const data = result.data as { video?: { url?: string }; video_url?: string };
+  const url = data?.video?.url ?? data?.video_url;
+  if (!url) throw new Error("fal merge-videos returned no video url");
+  return url;
+}
+
 // ---------- mock fallback ----------
 
 const SAMPLE_VIDEOS = [

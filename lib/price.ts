@@ -46,14 +46,25 @@ export async function submissionPriceSats(
 export function clampDuration(durationSec: number): number {
   const d = Math.round(Number(durationSec));
   if (!Number.isFinite(d)) return config.clipDuration;
-  return Math.min(config.clipDuration, Math.max(config.clipMinDuration, d));
+  return Math.min(config.maxTotalDuration, Math.max(config.clipMinDuration, d));
 }
 
 /** Exact sat price for every purchasable duration, for UI display. */
 export async function priceTableSats(): Promise<Record<number, number>> {
   const table: Record<number, number> = {};
-  for (let d = config.clipMinDuration; d <= config.clipDuration; d++) {
+  for (let d = config.clipMinDuration; d <= config.maxTotalDuration; d++) {
     table[d] = await submissionPriceSats(d);
   }
   return table;
+}
+
+/** Split a purchased duration into fal-sized scene lengths (each 5–15s).
+ * 20s → [10, 10]; 45s → [15, 15, 15]. */
+export function splitSegments(totalSec: number): number[] {
+  const total = clampDuration(totalSec);
+  if (total <= config.clipDuration) return [total];
+  const n = Math.ceil(total / config.clipDuration);
+  const base = Math.floor(total / n);
+  const remainder = total - base * n;
+  return Array.from({ length: n }, (_, i) => base + (i < remainder ? 1 : 0));
 }

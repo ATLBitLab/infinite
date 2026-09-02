@@ -37,8 +37,12 @@ export interface Job {
   /** Requested amount. Persisted before invoice creation so webhook updates
    * can complete the job without relying on the Payments API read model. */
   sats?: number;
-  /** Purchased clip length in seconds (5–15). Absent = default max length. */
+  /** Purchased clip length in seconds. Absent = default max single length. */
   duration?: number;
+  /** One prompt per scene for multi-scene episodes (chained renders). */
+  scenePrompts?: string[];
+  /** Seconds per scene, parallel to scenePrompts. */
+  segmentDurations?: number[];
   /** BOLT11 populated by the receive.generated webhook (or reconciliation). */
   bolt11?: string;
   clipId?: string;

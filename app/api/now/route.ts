@@ -34,7 +34,7 @@ export async function GET(request: Request) {
     needsBootstrap: now.needsBootstrap && !misconfigured,
     priceSats,
     priceTable,
-    durations: { min: config.clipMinDuration, max: config.clipDuration },
+    durations: { min: config.clipMinDuration, max: config.maxTotalDuration },
     mockMode,
     falPaused,
     falPausedReason: falLock?.reason || undefined,

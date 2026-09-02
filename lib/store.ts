@@ -20,8 +20,10 @@ interface Store {
   pushDeferred(jobId: string): Promise<void>;
   popDeferred(): Promise<string | null>;
   /** TTL flag, e.g. "fal is balance-locked, pause submissions". */
-  setFlag(key: string, ttlSeconds: number): Promise<void>;
+  setFlag(key: string, ttlSeconds: number, reason?: string): Promise<void>;
   getFlag(key: string): Promise<boolean>;
+  /** Flag with diagnostics: why + when it was set (null when inactive). */
+  getFlagInfo(key: string): Promise<{ reason: string; ts: number } | null>;
   /** Presence heartbeat: viewers re-register on every poll; entries older
    * than the TTL are pruned, so the count only reflects live browsers. */
   touchPresence(viewerId: string, name: string): Promise<void>;
@@ -93,11 +95,27 @@ class RedisStore implements Store {
   async popDeferred(): Promise<string | null> {
     return await this.redis.lpop<string>("infinite:deferred");
   }
-  async setFlag(key: string, ttlSeconds: number): Promise<void> {
-    await this.redis.set(`infinite:flag:${key}`, "1", { ex: ttlSeconds });
+  async setFlag(key: string, ttlSeconds: number, reason = ""): Promise<void> {
+    await this.redis.set(
+      `infinite:flag:${key}`,
+      JSON.stringify({ reason, ts: Date.now() }),
+      { ex: ttlSeconds },
+    );
   }
   async getFlag(key: string): Promise<boolean> {
     return Boolean(await this.redis.get(`infinite:flag:${key}`));
+  }
+  async getFlagInfo(key: string): Promise<{ reason: string; ts: number } | null> {
+    const raw = await this.redis.get<{ reason: string; ts: number } | string>(
+      `infinite:flag:${key}`,
+    );
+    if (!raw) return null;
+    try {
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return { reason: String(parsed.reason ?? ""), ts: Number(parsed.ts ?? 0) };
+    } catch {
+      return { reason: "", ts: 0 }; // legacy "1" value
+    }
   }
   async touchPresence(viewerId: string, name: string): Promise<void> {
     await this.redis.zadd(PRESENCE_KEY, {
@@ -181,13 +199,18 @@ class MemoryStore implements Store {
   async popDeferred() {
     return this.deferred.shift() ?? null;
   }
-  async setFlag(key: string, ttlSeconds: number) {
+  async setFlag(key: string, ttlSeconds: number, reason = "") {
     this.flags.set(key, Date.now() + ttlSeconds * 1000);
+    this.flagReasons.set(key, { reason, ts: Date.now() });
   }
   async getFlag(key: string) {
     const expires = this.flags.get(key);
     return Boolean(expires && expires > Date.now());
   }
+  async getFlagInfo(key: string) {
+    return (await this.getFlag(key)) ? (this.flagReasons.get(key) ?? null) : null;
+  }
+  private flagReasons = new Map<string, { reason: string; ts: number }>();
   private presence = new Map<string, { name: string; ts: number }>();
   private activity: ActivityItem[] = [];
   async touchPresence(viewerId: string, name: string) {

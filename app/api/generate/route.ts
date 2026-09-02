@@ -1,5 +1,11 @@
 import { randomUUID } from "crypto";
-import { FAL_LOCK_FLAG, FAL_LOCK_TTL, generateVideo, isBalanceLock } from "@/lib/fal";
+import {
+  FAL_LOCK_FLAG,
+  FAL_LOCK_TTL,
+  falErrorDetail,
+  generateVideo,
+  isBalanceLock,
+} from "@/lib/fal";
 import { generateIdea } from "@/lib/llm";
 import { moderateAndExpand } from "@/lib/llm";
 import { scheduleClip } from "@/lib/stream";
@@ -79,7 +85,7 @@ async function deferJob(job: Job, err: unknown) {
   const store = getStore();
   console.error(`generation failed for job ${job.id}:`, err);
   if (isBalanceLock(err)) {
-    await store.setFlag(FAL_LOCK_FLAG, FAL_LOCK_TTL);
+    await store.setFlag(FAL_LOCK_FLAG, FAL_LOCK_TTL, falErrorDetail(err));
   }
   job.retries = (job.retries ?? 0) + 1;
   if (job.retries >= MAX_JOB_RETRIES) {
@@ -183,7 +189,7 @@ async function generateHouse() {
   } catch (err) {
     console.error("house generation failed:", err);
     if (isBalanceLock(err)) {
-      await store.setFlag(FAL_LOCK_FLAG, FAL_LOCK_TTL);
+      await store.setFlag(FAL_LOCK_FLAG, FAL_LOCK_TTL, falErrorDetail(err));
     }
     return Response.json({ error: "house generation failed" }, { status: 500 });
   } finally {

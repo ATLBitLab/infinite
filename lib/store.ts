@@ -29,6 +29,16 @@ interface Store {
   /** Rolling public activity feed (paid submissions), newest first. */
   pushActivity(item: ActivityItem): Promise<void>;
   getActivity(): Promise<ActivityItem[]>;
+  /** Webhook-fed Voltage payment state (bypasses their read-replica lag). */
+  putPaymentState(paymentId: string, state: WebhookPaymentState): Promise<void>;
+  getPaymentState(paymentId: string): Promise<WebhookPaymentState | null>;
+}
+
+export interface WebhookPaymentState {
+  status: string;
+  bolt11?: string;
+  event: string;
+  ts: number;
 }
 
 const PRESENCE_KEY = "infinite:presence";
@@ -112,6 +122,16 @@ class RedisStore implements Store {
     const raw = await this.redis.lrange<ActivityItem>(ACTIVITY_KEY, 0, ACTIVITY_MAX - 1);
     return raw.map((a) => (typeof a === "string" ? JSON.parse(a) : a));
   }
+  async putPaymentState(paymentId: string, state: WebhookPaymentState): Promise<void> {
+    await this.redis.set(`infinite:vpay:${paymentId}`, JSON.stringify(state), {
+      ex: 60 * 60 * 24,
+    });
+  }
+  async getPaymentState(paymentId: string): Promise<WebhookPaymentState | null> {
+    const raw = await this.redis.get<WebhookPaymentState>(`infinite:vpay:${paymentId}`);
+    if (!raw) return null;
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
+  }
 }
 
 function parseViewerMember(member: string): ViewerSample {
@@ -189,6 +209,13 @@ class MemoryStore implements Store {
   }
   async getActivity() {
     return [...this.activity];
+  }
+  private paymentStates = new Map<string, WebhookPaymentState>();
+  async putPaymentState(paymentId: string, state: WebhookPaymentState) {
+    this.paymentStates.set(paymentId, state);
+  }
+  async getPaymentState(paymentId: string) {
+    return this.paymentStates.get(paymentId) ?? null;
   }
 }
 

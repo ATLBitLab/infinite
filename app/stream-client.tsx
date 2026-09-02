@@ -46,6 +46,9 @@ export default function StreamClient() {
   const lastDrain = useRef(0);
   const identityRef = useRef<Identity | null>(null);
   const seenActivity = useRef<Set<string> | null>(null);
+  // Whether we should be playing with sound. Starts true: we attempt unmuted
+  // autoplay and downgrade to muted+tap-hint if the browser blocks it.
+  const soundIntent = useRef(true);
 
   const fetchNow = useCallback(async () => {
     try {
@@ -111,7 +114,9 @@ export default function StreamClient() {
     return () => clearInterval(t);
   }, [fetchNow]);
 
-  // Sync the <video> element to the broadcast schedule.
+  // Sync the <video> element to the broadcast schedule. Sound strategy:
+  // try unmuted autoplay first (works on desktop when the browser allows
+  // it); when blocked, fall back to muted playback and wait for a tap.
   useEffect(() => {
     const video = videoRef.current;
     const clip = now?.clip;
@@ -120,9 +125,47 @@ export default function StreamClient() {
       currentClipId.current = clip.id;
       video.src = clip.videoUrl;
       video.currentTime = now.offsetMs / 1000;
-      video.play().catch(() => {});
+      video.muted = !soundIntent.current;
+      video
+        .play()
+        .then(() => {
+          if (soundIntent.current) setSoundOn(true);
+        })
+        .catch(() => {
+          if (!video.muted) {
+            // Unmuted autoplay blocked — retry muted, keep the tap hint up.
+            video.muted = true;
+            soundIntent.current = false;
+            setSoundOn(false);
+            video.play().catch(() => {});
+          }
+        });
     }
   }, [now]);
+
+  const setSound = useCallback((on: boolean) => {
+    const video = videoRef.current;
+    soundIntent.current = on;
+    setSoundOn(on);
+    if (video) {
+      video.muted = !on;
+      if (on) {
+        video.play().catch(() => {
+          // Browser still refused unmuted playback — never freeze the
+          // broadcast: fall back to muted and keep the tap hint up.
+          video.muted = true;
+          soundIntent.current = false;
+          setSoundOn(false);
+          video.play().catch(() => {});
+        });
+      }
+    }
+  }, []);
+
+  // A tap anywhere on the video is the user gesture that unlocks audio.
+  const enableSoundOnTap = useCallback(() => {
+    if (!soundIntent.current) setSound(true);
+  }, [setSound]);
 
   const onEnded = useCallback(() => {
     currentClipId.current = null;
@@ -132,15 +175,19 @@ export default function StreamClient() {
   return (
     <main className="relative h-dvh w-dvw overflow-hidden bg-void">
       {/* ---- video ---- */}
-      <div className="scanlines absolute inset-0">
+      <div className="scanlines absolute inset-0" onClick={enableSoundOnTap}>
         <video
           ref={videoRef}
-          muted={!soundOn}
-          autoPlay
+          muted
           playsInline
           onEnded={onEnded}
           className="h-full w-full object-contain"
         />
+        {now?.clip && !soundOn && (
+          <div className="pointer-events-none absolute bottom-24 left-1/2 -translate-x-1/2 rounded-sm border-2 border-mustard bg-black/75 px-4 py-2 text-xs font-bold tracking-[0.2em] text-mustard">
+            🔇 TAP FOR SOUND
+          </div>
+        )}
         {!now?.clip && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
             <div className="font-[family-name:var(--font-display)] text-5xl text-mustard md:text-7xl">
@@ -181,7 +228,7 @@ export default function StreamClient() {
             </div>
           )}
           <button
-            onClick={() => setSoundOn((s) => !s)}
+            onClick={() => setSound(!soundOn)}
             className="rounded-sm border-2 border-cream/60 bg-black/60 px-3 py-1 text-xs font-bold tracking-widest hover:border-teal hover:text-teal"
           >
             {soundOn ? "SOUND: ON" : "SOUND: OFF"}

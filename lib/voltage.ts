@@ -41,10 +41,13 @@ export async function createInvoice(
     throw new Error(`voltage create payment failed: ${res.status} ${await res.text()}`);
   }
 
-  // Poll until the invoice is generated (usually <2s).
+  // Poll until the invoice is generated (usually <2s). Creation is async:
+  // the payment record 404s briefly after the 202, so 404 here means
+  // "not materialized yet", not an error.
   for (let i = 0; i < 20; i++) {
     await new Promise((r) => setTimeout(r, 500));
     const payment = await getPayment(id);
+    if (payment.status === "not_found") continue;
     if (payment.bolt11) {
       return { paymentId: id, bolt11: payment.bolt11, sats };
     }
@@ -65,6 +68,10 @@ export async function getPayment(paymentId: string): Promise<PaymentState> {
   if (mockMode.voltage) return mockGetPayment(paymentId);
 
   const res = await fetch(paymentsUrl(paymentId), { headers: H() });
+  // Async creation: a payment can 404 for a moment after its 202.
+  if (res.status === 404) {
+    return { status: "not_found", paid: false };
+  }
   if (!res.ok) {
     throw new Error(`voltage get payment failed: ${res.status}`);
   }

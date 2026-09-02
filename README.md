@@ -38,6 +38,16 @@ viewer idea ──► durable "preparing" job ──► UI shows AI REVIEW immed
   instead of interpreting the new preparation state as invoice latency.
 - **Mock mode**: with no env vars at all, the app runs on sample videos, canned
   ideas, and fake auto-settling invoices — full flow, zero spend.
+- **Live chat (flagged)**: `NEXT_PUBLIC_CHAT_ENABLED=1` (or `?chat=1` on any URL)
+  shows a chat panel next to the player. It free-rides on nostr: every visitor
+  already has a per-browser nostr key, so messages are NIP-53 live-chat events
+  (kind 1311) bound to the station's room address and read straight from public
+  relays — no chat server. Every message has a **⚡ FUND** tap that drops its
+  text into the pitch form, so it goes through the same AI review + Lightning
+  checkout as any submission (fresh job id, moderation re-run, price recomputed;
+  nothing in the chat event is trusted). Anyone with a nostr key can post, so
+  there is a per-device mute list and a local send throttle, but no server-side
+  moderation of chat text.
 
 ## Economics
 

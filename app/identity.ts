@@ -26,7 +26,7 @@ export const SITE_URL = "https://infinite.atlbitlab.com";
 // ATL BitLab's nostr identity — tagged on every purchase note.
 const ATLBITLAB_NPUB =
   "npub1cst99sheckxrllnh9pw093mls775tdx80x99mq096pkl2t9r9swqsugekj";
-const ATLBITLAB_HEX =
+export const ATLBITLAB_HEX =
   "c41652c2f9c58c3ffe77285cf2c77f87bd45b4c7798a5d81e5d06df52ca32c1c";
 
 export const RELAYS = [
@@ -43,7 +43,9 @@ export interface Identity {
   name: string;
 }
 
-function getSecretKey(): Uint8Array {
+/** This browser's signing key (minted on first use). Shared with the live
+ * chat so chat messages and purchase notes come from the same identity. */
+export function getSecretKey(): Uint8Array {
   const stored = localStorage.getItem(SK_KEY);
   if (stored) {
     try {

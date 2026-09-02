@@ -10,6 +10,8 @@ import {
   type Identity,
 } from "./identity";
 import ShareButton from "./share-button";
+import ChatPanel, { type ChatAuthor } from "./chat-panel";
+import { chatEnabled, postChatOnce } from "./chat";
 
 interface NowResponse extends NowPlaying {
   priceSats: number;
@@ -110,6 +112,7 @@ function broadcastPurchaseOnce(jobId: string, title: string) {
   }
   announcedPurchases.add(jobId);
   broadcastPurchase(title);
+  if (chatEnabled()) postChatOnce(`🎬 just funded “${title}” — airing soon`);
 }
 
 /** BIP-177 display: sats denominated with the bitcoin symbol, e.g. ₿2,600. */
@@ -121,6 +124,10 @@ export default function StreamClient() {
   const [modal, setModal] = useState<ModalState>({ phase: "closed" });
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [toasts, setToasts] = useState<ActivityItem[]>([]);
+  // Live chat is feature-flagged (NEXT_PUBLIC_CHAT_ENABLED or ?chat=1) and
+  // resolved on the client so the server render never guesses.
+  const [chatOn, setChatOn] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const currentClipId = useRef<string | null>(null);
   const lastBootstrap = useRef(0);
@@ -199,6 +206,7 @@ export default function StreamClient() {
     const me = loadIdentity();
     identityRef.current = me;
     setIdentity(me);
+    setChatOn(chatEnabled());
     fetchNow();
     const t = setInterval(fetchNow, POLL_MS);
     return () => clearInterval(t);
@@ -262,8 +270,32 @@ export default function StreamClient() {
     fetchNow();
   }, [fetchNow]);
 
+  // "Fund it" on a chat message: the text becomes an ordinary pitch and goes
+  // through the normal server-owned review → checkout flow (fresh job id,
+  // moderation re-run, price recomputed). Credit names both people when the
+  // payer is funding somebody else's idea.
+  const fundFromChat = useCallback(
+    (text: string, author: ChatAuthor) => {
+      const me = identityRef.current;
+      const credit =
+        !me || author.pubkey === me.pubkey
+          ? ""
+          : `${author.name} (funded by ${me.name})`.slice(0, 50);
+      setChatOpen(false);
+      setModal({
+        phase: "compose",
+        idea: text.slice(0, 500),
+        credit,
+        duration: 15,
+        busy: false,
+      });
+    },
+    [],
+  );
+
   return (
-    <main className="relative h-dvh w-dvw overflow-hidden bg-void">
+    <main className="relative flex h-dvh w-dvw overflow-hidden bg-void">
+    <div className="relative min-w-0 flex-1">
       {/* ---- video ---- */}
       <div className="scanlines absolute inset-0" onClick={enableSoundOnTap}>
         <video
@@ -297,11 +329,11 @@ export default function StreamClient() {
           <span className="font-[family-name:var(--font-display)] text-2xl leading-none text-mustard drop-shadow-[3px_3px_0_#e63946]">
             INFINITE
           </span>
-          <span className="rounded-sm border-2 border-danger bg-black/60 px-2 py-0.5 text-xs font-bold tracking-widest text-danger">
+          <span className="whitespace-nowrap rounded-sm border-2 border-danger bg-black/60 px-2 py-0.5 text-xs font-bold tracking-widest text-danger">
             <span className="blink">●</span> {now?.rerun ? "RERUN" : "ON AIR"}
           </span>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-end gap-2 md:gap-3">
           {now?.viewers && now.viewers.count > 0 && (
             <div
               className="flex items-center gap-2 rounded-sm border-2 border-cream/30 bg-black/60 px-2 py-1"
@@ -319,6 +351,14 @@ export default function StreamClient() {
           )}
           {now?.clip && (
             <ShareButton clipId={now.clip.id} title={now.clip.title} />
+          )}
+          {chatOn && (
+            <button
+              onClick={() => setChatOpen(true)}
+              className="rounded-sm border-2 border-cream/60 bg-black/60 px-3 py-1 text-xs font-bold tracking-widest hover:border-teal hover:text-teal md:hidden"
+            >
+              CHAT
+            </button>
           )}
           <button
             onClick={() => setSound(!soundOn)}
@@ -434,6 +474,16 @@ export default function StreamClient() {
           onScheduled={fetchNow}
         />
       )}
+    </div>
+    {chatOn && identity && (
+      <ChatPanel
+        identity={identity}
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        onFund={fundFromChat}
+        fundDisabled={Boolean(now?.falPaused)}
+      />
+    )}
     </main>
   );
 }

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- INFINITE favicon: a two-tone infinity ribbon with the site's red hard shadow -->
+  <rect width="64" height="64" rx="14" fill="#0d0b0e"/>
+  <g fill="none" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <!-- hard shadow, same trick as the title's text-shadow -->
+    <g stroke="#e63946" transform="translate(2.5 2.5)">
+      <path d="M32 32C26 20 8 20 8 32S26 44 32 32"/>
+      <path d="M32 32C38 20 56 20 56 32S38 44 32 32"/>
+    </g>
+    <path stroke="#ff6b35" d="M32 32C38 20 56 20 56 32S38 44 32 32"/>
+    <path stroke="#2ec4b6" d="M32 32C26 20 8 20 8 32S26 44 32 32"/>
+    <!-- orange passes back over teal at the crossing so it reads as a woven loop -->
+    <path stroke="#ff6b35" d="M28 38.5C30 35.5 31 33.5 32 32"/>
+  </g>
+  <!-- ON AIR dot -->
+  <circle cx="52" cy="12" r="4.5" fill="#f5b700"/>
+</svg>

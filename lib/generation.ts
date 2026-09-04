@@ -1,4 +1,5 @@
 import { FAL_LOCK_FLAG, FAL_LOCK_TTL, falErrorDetail, isBalanceLock } from "./fal";
+import { sandboxEnabled } from "./sandbox";
 import { getStore } from "./store";
 import type { Job } from "./types";
 
@@ -13,6 +14,14 @@ export const RECORDER_ALIVE_TTL = 180; // seconds; the worker polls every 15s
 
 export async function recorderAlive(): Promise<boolean> {
   return getStore().getFlag(RECORDER_ALIVE_FLAG);
+}
+
+/** Director episodes are for sale when something will record them: either a
+ * long-lived recorder worker is polling, or the station can spawn a Vercel
+ * Sandbox recorder per paid job (lib/sandbox.ts). */
+export async function directorAvailable(): Promise<boolean> {
+  if (sandboxEnabled()) return true;
+  return recorderAlive();
 }
 
 /** Give up on a paid job for good (the caller has decided a retry cannot

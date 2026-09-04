@@ -12,6 +12,8 @@ import {
 import { deferJob, pruneMissingJob } from "@/lib/generation";
 import { generateIdea } from "@/lib/llm";
 import { moderateAndExpand } from "@/lib/llm";
+import { spawnRecorderSandbox } from "@/lib/sandbox";
+import { archiveOrKeep } from "@/lib/storage";
 import { scheduleClip } from "@/lib/stream";
 import { getStore, persistenceMisconfigured } from "@/lib/store";
 import { config } from "@/lib/config";
@@ -93,16 +95,19 @@ async function runGeneration(job: Job) {
     job.sceneUrls = sceneUrls;
     await store.putJob(job);
   }
-  const videoUrl = await mergeVideos(sceneUrls);
+  const merged = await mergeVideos(sceneUrls);
   const totalDuration = lengths.reduce((sum, s) => sum + s, 0);
 
+  const clipId = randomUUID();
+  const { videoUrl, sourceUrl } = await archiveOrKeep(clipId, merged);
   const clip = await scheduleClip({
-    id: randomUUID(),
+    id: clipId,
     kind: "paid",
     idea: job.idea,
     title: job.title,
     videoPrompt: job.videoPrompt,
     videoUrl,
+    sourceUrl,
     duration: totalDuration,
     credit: job.credit,
     createdAt: Date.now(),
@@ -128,15 +133,21 @@ async function generateForJob(jobId: string) {
   if (!existing) {
     return Response.json({ error: "unknown job" }, { status: 404 });
   }
-  // Director episodes are live sessions recorded by the recorder worker
-  // (/api/director), not fal queue renders. Leave the job queued for it; the
-  // client keeps polling /api/payment/<id> until the recorder marks it done.
+  // Director episodes are live sessions recorded by a recorder (/api/director),
+  // not fal queue renders. Spawn a sandbox recorder for it when that is how
+  // this station records (a no-op when one is already up or a long-lived
+  // worker is polling); the client keeps polling /api/payment/<id> until the
+  // recorder marks it done.
   if (existing.renderer === "director") {
     if (existing.status === "done") {
       return Response.json({ status: "done", clipId: existing.clipId });
     }
     if (existing.status === "paid" || existing.status === "generating") {
-      return Response.json({ status: "generating", renderer: "director" });
+      let recorder: string | undefined;
+      if (existing.status === "paid") {
+        recorder = await spawnRecorderSandbox(existing.id);
+      }
+      return Response.json({ status: "generating", renderer: "director", recorder });
     }
     return Response.json(
       { error: `job is ${existing.status}, not paid` },
@@ -197,7 +208,12 @@ async function drainDeferred() {
         await pruneMissingJob(jobId);
         continue;
       }
-      if (pending.renderer === "director") continue;
+      if (pending.renderer === "director") {
+        // Belongs to a recorder; make sure one is coming (idempotent) and
+        // move on so it never starves the fal renders behind it.
+        if (pending.status === "paid") await spawnRecorderSandbox(pending.id);
+        continue;
+      }
       const job = await store.claimJobGeneration(jobId, GENERATION_LEASE_MS);
       if (!job) continue;
       rendered += 1;
@@ -236,13 +252,16 @@ async function generateHouse() {
     const { idea } = await generateIdea();
     const moderation = await moderateAndExpand(idea);
     const video = await generateVideo(moderation.videoPrompt);
+    const clipId = randomUUID();
+    const { videoUrl, sourceUrl } = await archiveOrKeep(clipId, video.url);
     const clip = await scheduleClip({
-      id: randomUUID(),
+      id: clipId,
       kind: "house",
       idea,
       title: moderation.title,
       videoPrompt: moderation.videoPrompt,
-      videoUrl: video.url,
+      videoUrl,
+      sourceUrl,
       duration: video.duration,
       createdAt: Date.now(),
     } satisfies Omit<Clip, "airAt">);

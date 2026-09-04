@@ -18,6 +18,7 @@
  *   RECORDER_SECRET    must match the app's RECORDER_SECRET
  *   FAL_KEY            fal API key (spent by the Director session + upload)
  *   RECORDER_POLL_MS   idle poll interval (default 15000)
+ *   RECORDER_JOB_ID    claim only this job (set by the sandbox spawner)
  *   RECORDER_FAKE=1    synthetic canvas stream instead of a fal session (tests
  *                      the whole pipeline for free; the station must be in
  *                      mock mode — a real station refuses fake claims)
@@ -40,6 +41,9 @@ const FAKE = process.env.RECORDER_FAKE === "1";
 const FAKE_UPLOAD_URL = process.env.RECORDER_FAKE_UPLOAD_URL ?? "";
 const HEADED = process.env.RECORDER_HEADED === "1";
 const ONCE = process.argv.includes("--once");
+// Set by the station when it spawns a sandbox recorder for one paid job:
+// claim exactly that job, never whatever else is queued.
+const JOB_ID = process.env.RECORDER_JOB_ID || "";
 const MEDIA_TIMEOUT_MS = 180_000;
 const API_TIMEOUT_MS = 30_000;
 const TOOL_TIMEOUT_MS = 10 * 60_000;
@@ -134,6 +138,7 @@ async function recordSession(spec) {
   });
   const events = [];
   let chunks = 0;
+  let sessionMetricsLogged = false;
   let failed = null;
   // Hard ceiling on the whole browser step: negotiation + first frame +
   // the episode itself + teardown. A wedged page must never block the loop.
@@ -156,6 +161,12 @@ async function recordSession(spec) {
         const m = rest.message ?? {};
         if (m.type === "chunk") {
           log(`  chunk ${m.chunk_index} (prompt v${m.prompt_version ?? "?"}, playback ${m.playback_seconds ?? "?"}s, buffer ${m.buffer_depth_seconds ?? "?"}s)`);
+        } else if (m.type === "session_info" || (m.type === "session_metrics" && !sessionMetricsLogged)) {
+          // Logged in full: session_info carries max_session_seconds (the
+          // cap behind stream_exhausted/session_limit) and the first
+          // session_metrics shows what the server counts against it.
+          if (m.type === "session_metrics") sessionMetricsLogged = true;
+          log(`  server ${m.type}`, JSON.stringify(m));
         } else if (m.type !== "chunk_metrics" && m.type !== "session_metrics" && m.type !== "pong") {
           log(`  server ${m.type}`, JSON.stringify(m).slice(0, 200));
         }
@@ -290,6 +301,7 @@ async function main() {
         action: "claim",
         mode: FAKE ? "fake" : "director",
         keepAlive: !ONCE,
+        ...(JOB_ID ? { jobId: JOB_ID } : {}),
       });
     } catch (err) {
       log("claim failed:", err.message);

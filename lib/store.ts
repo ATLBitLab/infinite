@@ -17,6 +17,8 @@ import type {
 interface Store {
   getClips(): Promise<Clip[]>;
   addClip(clip: Clip): Promise<void>;
+  /** Repoint an existing clip at its archived copy. False if the clip is gone. */
+  updateClipVideo(clipId: string, videoUrl: string, sourceUrl: string): Promise<boolean>;
   getJob(id: string): Promise<Job | null>;
   /** Create the initial durable record once and return the winning record. */
   createPreparingJob(job: Job): Promise<Job>;
@@ -259,6 +261,20 @@ class RedisStore implements Store {
   }
   async addClip(clip: Clip): Promise<void> {
     await this.redis.rpush(CLIPS_KEY, JSON.stringify(clip));
+  }
+  async updateClipVideo(clipId: string, videoUrl: string, sourceUrl: string): Promise<boolean> {
+    // Clips only ever append (rpush), so an index read moments ago still
+    // addresses the same row.
+    const raw = await this.redis.lrange<Clip>(CLIPS_KEY, 0, -1);
+    const index = raw.findIndex((c) => {
+      const clip: Clip = typeof c === "string" ? JSON.parse(c) : c;
+      return clip.id === clipId;
+    });
+    if (index < 0) return false;
+    const current: Clip =
+      typeof raw[index] === "string" ? JSON.parse(raw[index] as unknown as string) : raw[index];
+    await this.redis.lset(CLIPS_KEY, index, JSON.stringify({ ...current, videoUrl, sourceUrl }));
+    return true;
   }
   async getJob(id: string): Promise<Job | null> {
     const raw = await this.redis.get<Job>(JOB_PREFIX + id);
@@ -624,6 +640,13 @@ class MemoryStore implements Store {
   }
   async addClip(clip: Clip) {
     this.clips.push(clip);
+  }
+  async updateClipVideo(clipId: string, videoUrl: string, sourceUrl: string) {
+    const clip = this.clips.find((c) => c.id === clipId);
+    if (!clip) return false;
+    clip.videoUrl = videoUrl;
+    clip.sourceUrl = sourceUrl;
+    return true;
   }
   async getJob(id: string) {
     return this.jobs.get(id) ?? null;

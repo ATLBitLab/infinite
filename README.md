@@ -51,11 +51,17 @@ viewer idea ──► durable "preparing" job ──► UI shows AI REVIEW immed
 
 ## Economics
 
-fal MiniMax H3 Max: **$0.05/sec @ 480P, $0.08/sec @ 768P** → a 15s 768P clip costs
-**≈ $1.20** (plus ~a cent of LLM). Default submission price is **$2.00 in sats**
-(converted at spot, `PRICE_USD`/`PRICE_SATS` to tune), so each paid submission covers
-itself plus ~0.6 house clips. House filler is capped per day; the more people submit,
-the less filler you need.
+fal MiniMax H3 Max list price is **$0.05/sec @ 480P, $0.08/sec @ 768P** (promo
+rates until 2026-09-07), so a 15s 768P clip costs **≈ $1.20** plus ~a cent of
+LLM. Default submission price is **$2.00 in sats** per 15s (converted at spot,
+`PRICE_USD`/`PRICE_SATS` to tune), scaling linearly with length. House filler
+is capped per day; the more people submit, the less filler you need.
+
+Prices never fall below cost: `lib/price.ts` estimates what each length costs
+us (fal seconds at `FAL_VIDEO_USD_PER_SEC` / `FAL_DIRECTOR_USD_PER_SEC`, the
+60s director minimum, per-scene ffmpeg calls, sandbox time, LLM) and sells at
+no less than that × `PRICE_MARKUP` (default 1.5). When fal changes its rates,
+change the env vars; nothing else needs to move.
 
 ## Long episodes: H3 Max Director (optional)
 
@@ -63,15 +69,45 @@ Episodes up to 45s are rendered as frame-chained scenes through fal's queue
 API. Above that, character and plot continuity falls apart, so the optional
 **director tier** sells 46–120s episodes as ONE continuous take from
 [`minimax/h3-max/director`](https://fal.ai/models/minimax/h3-max/director),
-which keeps up to two minutes of story context natively.
+which keeps up to two minutes of story context natively. (fal ends a session
+after 13 chunks, about 103s of video, so 120s purchases currently deliver
+~103s.)
 
 Director is a live WebRTC stream, not a file API, so those episodes are
 recorded by the worker in [`recorder/`](recorder/README.md) rather than inside
 `/api/generate`. Enable it with `DIRECTOR_MAX_DURATION=120` and a shared
-`RECORDER_SECRET`, then run the recorder somewhere with `FAL_KEY`. The long
-durations only appear on the slider while a recorder is polling. Sessions
-bill a 60s minimum ($0.02/s promo until 2026-09-14, $0.08/s list), and the
-writers' room writes a show bible plus one beat per 10s chunk.
+`RECORDER_SECRET`, then give the station a recorder in one of two ways:
+
+- **Sandbox (default for Vercel):** set `RECORDER_SANDBOX=1`. Every paid
+  director job spawns one [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox)
+  microVM that clones this repo at the deployed commit, runs
+  `recorder --once` for that job, and is stopped when the episode lands.
+  Nothing runs while nobody is buying. Optionally bake the ~60s of VM setup
+  into a snapshot with `node recorder/sandbox-snapshot.mjs` and set
+  `RECORDER_SANDBOX_SNAPSHOT`. Sandbox auth is automatic on Vercel (OIDC).
+- **Long-lived worker:** run the recorder anywhere with `FAL_KEY` (see
+  `recorder/Dockerfile`). The long durations only appear on the slider while
+  it is polling.
+
+Sessions bill a 60s minimum ($0.02/s promo until 2026-09-14, $0.08/s list),
+and the writers' room writes a show bible plus one beat per 10s chunk.
+
+## Clip archive (Cloudflare R2)
+
+fal keeps generated media on its CDN with a configurable retention and no
+documented default. With `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+`R2_SECRET_ACCESS_KEY`, `R2_BUCKET` and `R2_PUBLIC_URL` set, every finished
+mp4 (house, chained and director) is copied into the bucket before the clip
+is scheduled and served from there; the fal URL is kept as `sourceUrl`. A copy
+failure never blocks an episode: the clip airs from fal and
+
+```bash
+curl -H "Authorization: Bearer $CRON_SECRET" "https://<host>/api/cron/archive-clips?limit=5"
+```
+
+archives whatever is still on fal (run it repeatedly until `remaining` is 0;
+this is also the backfill for the pre-archive library). R2 egress is free, so
+serving from the bucket costs nothing per view.
 
 ## Develop
 
@@ -90,7 +126,9 @@ live service-by-service (each one falls back to mock independently).
    required in prod; the in-memory store is dev-only.
 3. Set `FAL_KEY`, `ANTHROPIC_API_KEY`, the four Voltage account variables,
    `CRON_SECRET`, and `VOLTAGE_WEBHOOK_ID` / `VOLTAGE_WEBHOOK_SECRET` as
-   described below.
+   described below. For the director tier add `DIRECTOR_MAX_DURATION`,
+   `RECORDER_SECRET` and `RECORDER_SANDBOX=1`; for the clip archive the five
+   `R2_*` variables.
 4. Deploy. The generate route sets `maxDuration = 300`.
 
 ## Voltage webhook

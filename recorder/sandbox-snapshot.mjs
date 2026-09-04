@@ -46,7 +46,9 @@ try {
   await run(
     sandbox,
     "cd /tmp && curl -sSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ " +
-      "&& sudo install -m 755 ffmpeg-*-static/ffmpeg /usr/local/bin/ffmpeg && ffmpeg -version | head -1",
+      "&& sudo install -m 755 ffmpeg-*-static/ffmpeg /usr/local/bin/ffmpeg " +
+      "&& sudo install -m 755 ffmpeg-*-static/ffprobe /usr/local/bin/ffprobe " +
+      "&& ffmpeg -version | head -1 && ffprobe -version | head -1",
     "ffmpeg",
   );
   // Warm the npm cache and the Playwright browser cache with the versions

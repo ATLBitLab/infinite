@@ -30,6 +30,7 @@ export async function GET(
         ? { bolt11: job.bolt11, sats: job.sats }
         : null,
     clipId: job.clipId,
+    renderer: job.renderer ?? "fal",
     error: job.error,
     failureStage: job.failureStage,
   });

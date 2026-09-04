@@ -13,6 +13,19 @@ export const config = {
   maxTotalDuration: intEnv("MAX_TOTAL_DURATION", 45),
   clipResolution: (process.env.CLIP_RESOLUTION ?? "768P") as "480P" | "768P",
 
+  // fal.ai H3 Max Director — one continuous, natively coherent take instead
+  // of frame-chained scenes. It is a live WebRTC stream (no queue/mp4 API),
+  // so episodes above maxTotalDuration are recorded by the recorder worker
+  // (see recorder/). 0 disables the director tier; 120 is the longest
+  // session fal allows without approval. Sessions bill 60s minimum.
+  directorMaxDuration: intEnv("DIRECTOR_MAX_DURATION", 0),
+  directorModel: process.env.FAL_DIRECTOR_MODEL ?? "minimax/h3-max/director",
+  // Director generates fixed 10s chunks; the writers' room writes one beat
+  // per chunk and the recorder sends the next beat as each chunk lands.
+  directorBeatSeconds: 10,
+  // Shared secret the recorder worker presents to /api/director.
+  recorderSecret: process.env.RECORDER_SECRET ?? "",
+
   // Anthropic — ideas, moderation, prompt expansion
   anthropicKey: process.env.ANTHROPIC_API_KEY ?? "",
 

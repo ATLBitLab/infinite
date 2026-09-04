@@ -28,6 +28,8 @@ export type JobStatus =
   | "done"
   | "failed";
 
+export type JobRenderer = "fal" | "director";
+
 export type JobFailureStage =
   | "preflight"
   | "invoice"
@@ -49,6 +51,13 @@ export interface Job {
   sats?: number;
   /** Purchased clip length in seconds. Absent = default max single length. */
   duration?: number;
+  /** Which render path produces the clip. Absent = "fal" (queue API, chained
+   * scenes). "director" = one continuous H3 Max Director session, recorded
+   * by the recorder worker rather than rendered inside /api/generate. */
+  renderer?: JobRenderer;
+  /** Director only: the show bible sent as the session's configure prompt.
+   * scenePrompts then hold one beat per 10s chunk. */
+  directorPremise?: string;
   /** One prompt per scene for multi-scene episodes (chained renders). */
   scenePrompts?: string[];
   /** Seconds per scene, parallel to scenePrompts. */

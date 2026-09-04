@@ -100,6 +100,7 @@ export async function prepareSubmission(
           inProgress.idea,
           segments,
           AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
+          inProgress.renderer ?? "fal",
         ),
         submissionPriceSats(inProgress.duration),
       ]);
@@ -119,11 +120,13 @@ export async function prepareSubmission(
       const title = moderation.title.trim();
       const videoPrompt = moderation.videoPrompt.trim();
       const scenePrompts = moderation.scenePrompts.map((prompt) => prompt.trim());
+      const directorPremise = moderation.directorPremise?.trim();
       if (
         !title ||
         !videoPrompt ||
         scenePrompts.length !== segments.length ||
-        scenePrompts.some((prompt) => !prompt)
+        scenePrompts.some((prompt) => !prompt) ||
+        (inProgress.renderer === "director" && !directorPremise)
       ) {
         throw new Error("writers' room returned incomplete prompt data");
       }
@@ -136,6 +139,7 @@ export async function prepareSubmission(
         title,
         videoPrompt,
         scenePrompts,
+        directorPremise,
         sats,
         paymentId: jobId,
         preparedAt: Date.now(),

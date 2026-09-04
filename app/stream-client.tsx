@@ -16,7 +16,7 @@ import { chatEnabled, postChatOnce } from "./chat";
 interface NowResponse extends NowPlaying {
   priceSats: number;
   priceTable?: Record<number, number>;
-  durations?: { min: number; max: number };
+  durations?: { min: number; max: number; directorAbove?: number };
   mockMode: { fal: boolean; llm: boolean; voltage: boolean };
   store: "redis" | "memory";
   falPaused?: boolean;
@@ -1036,9 +1036,12 @@ function SubmitModal({
                 <span>{now?.durations?.max ?? 15}s · full episode</span>
               </div>
               <div className="mt-1 text-[10px] text-cream/50">
-                {modal.duration > 15
-                  ? `rendered as ${Math.ceil(modal.duration / 15)} chained scenes, cut together`
-                  : "single continuous shot"}
+                {now?.durations?.directorAbove !== undefined &&
+                modal.duration > now.durations.directorAbove
+                  ? "one continuous take, directed live beat by beat (H3 Max Director) — allow a few minutes"
+                  : modal.duration > 15
+                    ? `rendered as ${Math.ceil(modal.duration / 15)} chained scenes, cut together`
+                    : "single continuous shot"}
               </div>
             </div>
             {modal.error && <div className="text-sm text-danger">{modal.error}</div>}
@@ -1198,7 +1201,8 @@ function SubmitModal({
               Paid. The render farm is drawing{" "}
               <span className="text-mustard">“{modal.title}”</span> frame by
               frame — seconds for a short clip, a couple of minutes for a
-              multi-scene episode.
+              multi-scene episode, and a few minutes for a live-directed
+              feature (it is shot in real time, then cut).
             </p>
           </div>
         )}

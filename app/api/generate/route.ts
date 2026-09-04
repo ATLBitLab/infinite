@@ -9,7 +9,7 @@ import {
   isBalanceLock,
   mergeVideos,
 } from "@/lib/fal";
-import { deferJob } from "@/lib/generation";
+import { deferJob, pruneMissingJob } from "@/lib/generation";
 import { generateIdea } from "@/lib/llm";
 import { moderateAndExpand } from "@/lib/llm";
 import { scheduleClip } from "@/lib/stream";
@@ -26,7 +26,9 @@ export const maxDuration = 300;
 const GENERATION_LEASE_MS = 330_000;
 const GENERATION_DRAIN_LOCK_SECONDS = 330;
 const DRAIN_RENDER_LIMIT = 2;
-const DRAIN_SCAN_LIMIT = 10;
+// Wide enough that a backlog of director jobs (recorder down) or dead
+// members cannot hide the fal renders behind them.
+const DRAIN_SCAN_LIMIT = 50;
 
 /** Run a generation.
  *  - {jobId}: generate the clip for a PAID job.
@@ -191,7 +193,11 @@ async function drainDeferred() {
     for (const jobId of jobIds) {
       if (rendered >= DRAIN_RENDER_LIMIT) break;
       const pending = await store.getJob(jobId);
-      if (!pending || pending.renderer === "director") continue;
+      if (!pending) {
+        await pruneMissingJob(jobId);
+        continue;
+      }
+      if (pending.renderer === "director") continue;
       const job = await store.claimJobGeneration(jobId, GENERATION_LEASE_MS);
       if (!job) continue;
       rendered += 1;

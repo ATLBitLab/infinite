@@ -8,12 +8,14 @@
  *
  * Contract source: fal.ai/models/minimax/h3-max/director/api (AsyncAPI):
  *   client → configure { protocol_version: 1, type, prompt, prompt_version,
- *                        aspect_ratio, resolution, memory, seed }
+ *                        aspect_ratio 16:9|9:16|1:1, resolution 480p|768p,
+ *                        memory 1..50, seed }
  *   client → prompt    { type, prompt, prompt_version }
  *   client → stop      { type }
  *   server → chunk     { chunk_index, prompt_version, playback_seconds, ... }
- *   server → prompt_applied | prompt_pending | prompt_rejected | error |
- *            deadline_missed | stream_exhausted | configured | session_info */
+ *   server → configured | prompt_applied | prompt_pending | prompt_rejected |
+ *            error { code, error } | deadline_missed | stream_exhausted |
+ *            session_info | chunk_metrics | session_metrics | pong */
 import { createFalClient } from "@fal-ai/client";
 import { wma } from "@fal-ai/client/realtime";
 
@@ -32,9 +34,31 @@ export interface EpisodeSpec {
 interface StartOptions {
   key: string;
   fake: boolean;
-  /** Give up if no media arrives within this many ms. */
+  /** Give up if no decodable frame arrives within this many ms. */
   mediaTimeoutMs: number;
 }
+
+/** A failure with enough shape for the station to decide whether another
+ * billed session could possibly succeed. */
+export class DirectorError extends Error {
+  constructor(
+    message: string,
+    public code: string,
+    public retryable: boolean,
+    public balanceLock = false,
+  ) {
+    super(message);
+  }
+}
+
+/** Server error codes for which the same premise/beats would fail again. */
+const NON_RETRYABLE_CODES = new Set([
+  "content_policy",
+  "immutable_settings",
+  "invalid_message",
+  "not_configured",
+  "invalid_initial_image",
+]);
 
 declare global {
   interface Window {
@@ -47,6 +71,8 @@ declare global {
 function emit(type: string, detail: Record<string, unknown> = {}) {
   window.__recorderEvent(JSON.stringify({ type, at: Date.now(), ...detail }));
 }
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 async function blobToBase64(blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -66,13 +92,24 @@ function pickMimeType(): string {
   return candidates.find((c) => MediaRecorder.isTypeSupported(c)) ?? "";
 }
 
+/** Everything that can end a recording early: a session failure (reject) or
+ * the runner finishing on its own (resolve). */
+interface Cutoff {
+  /** Rejects on failure. */
+  failed: Promise<never>;
+  /** Resolves when the stream ended cleanly (stream_exhausted). */
+  ended: Promise<void>;
+}
+
 /** Wait until the stream's video track has actually presented a frame, so
- * the recording does not open with seconds of black while the runner warms up. */
-function waitForFirstFrame(stream: MediaStream): Promise<void> {
+ * the recording does not open with seconds of black while the runner warms
+ * up. Bounded: a session that negotiates but never decodes must not wedge
+ * the worker. */
+function waitForFirstFrame(stream: MediaStream, timeoutMs: number, cutoff: Cutoff): Promise<void> {
   const video = document.querySelector("video") as HTMLVideoElement;
   video.srcObject = stream;
   video.muted = true;
-  return new Promise((resolve) => {
+  const firstFrame = new Promise<void>((resolve) => {
     const anyVideo = video as HTMLVideoElement & {
       requestVideoFrameCallback?: (cb: () => void) => void;
     };
@@ -83,11 +120,22 @@ function waitForFirstFrame(stream: MediaStream): Promise<void> {
     }
     void video.play().catch(() => resolve());
   });
+  const timeout = sleep(timeoutMs).then(() => {
+    throw new DirectorError("no decodable video frame within timeout", "no_media", true);
+  });
+  return Promise.race([firstFrame, timeout, cutoff.failed]);
 }
 
-/** Record `seconds` of the stream, streaming webm chunks to Node every second. */
-async function record(stream: MediaStream, seconds: number): Promise<number> {
-  await waitForFirstFrame(stream);
+/** Record up to `seconds` of the stream, streaming webm chunks to Node every
+ * second. Stops early on failure (throws after flushing) or when the runner
+ * ends the stream (returns what was captured). */
+async function record(
+  stream: MediaStream,
+  seconds: number,
+  firstFrameTimeoutMs: number,
+  cutoff: Cutoff,
+): Promise<number> {
+  await waitForFirstFrame(stream, firstFrameTimeoutMs, cutoff);
   const mimeType = pickMimeType();
   const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
   const pending: Promise<void>[] = [];
@@ -102,13 +150,31 @@ async function record(stream: MediaStream, seconds: number): Promise<number> {
   });
   recorder.start(1000);
   emit("recording_started", { mimeType: recorder.mimeType });
-  await new Promise((r) => setTimeout(r, seconds * 1000));
+
+  let failure: unknown = null;
+  let endedEarly = false;
+  try {
+    await Promise.race([
+      sleep(seconds * 1000),
+      cutoff.ended.then(() => {
+        endedEarly = true;
+      }),
+      cutoff.failed,
+    ]);
+  } catch (err) {
+    failure = err;
+  }
   recorder.stop();
   await stopped;
   await Promise.all(pending);
   const recordedSeconds = (performance.now() - started) / 1000;
-  emit("recording_stopped", { recordedSeconds });
+  emit("recording_stopped", { recordedSeconds, endedEarly, failed: Boolean(failure) });
+  if (failure) throw failure;
   return recordedSeconds;
+}
+
+function neverEnds(): Cutoff {
+  return { failed: new Promise<never>(() => {}), ended: new Promise<void>(() => {}) };
 }
 
 /** A synthetic stream (canvas + oscillator) so the whole Node pipeline can be
@@ -144,7 +210,7 @@ function fakeStream(spec: EpisodeSpec): MediaStream {
   return stream;
 }
 
-async function runFake(spec: EpisodeSpec): Promise<void> {
+async function runFake(spec: EpisodeSpec, opts: StartOptions): Promise<void> {
   const stream = fakeStream(spec);
   // Mimic the director's chunk cadence so beat scheduling is visible in logs.
   let chunk = 0;
@@ -153,10 +219,23 @@ async function runFake(spec: EpisodeSpec): Promise<void> {
     chunk += 1;
   }, spec.beatSeconds * 1000);
   try {
-    await record(stream, spec.duration);
+    await record(stream, spec.duration, opts.mediaTimeoutMs, neverEnds());
   } finally {
     clearInterval(ticker);
   }
+}
+
+function classify(error: unknown): DirectorError {
+  if (error instanceof DirectorError) return error;
+  const e = error as { status?: number; body?: { detail?: unknown }; message?: string };
+  const detail = typeof e?.body?.detail === "string" ? e.body.detail : "";
+  const message = detail || e?.message || String(error);
+  // fal 403s with "User is locked. Reason: Exhausted balance." when the
+  // account runs dry (same signature lib/fal.ts watches for on the queue path).
+  if (e?.status === 403 || /locked|balance/i.test(message)) {
+    return new DirectorError(message, "balance_lock", false, true);
+  }
+  return new DirectorError(message, "transport", true);
 }
 
 async function runDirector(spec: EpisodeSpec, opts: StartOptions): Promise<void> {
@@ -167,12 +246,23 @@ async function runDirector(spec: EpisodeSpec, opts: StartOptions): Promise<void>
 
   let promptVersion = 1;
   let nextBeat = 1; // beat 0 rides along with the configure prompt
-  let failure: Error | null = null;
+  let fail!: (err: DirectorError) => void;
+  let end!: () => void;
+  const cutoff: Cutoff = {
+    failed: new Promise<never>((_, reject) => {
+      fail = (err) => reject(err);
+    }),
+    ended: new Promise<void>((resolve) => {
+      end = resolve;
+    }),
+  };
+  // Surface the failure to whoever is awaiting; unobserved rejections are
+  // expected while we are between awaits.
+  cutoff.failed.catch(() => {});
+
   let mediaResolve!: (stream: MediaStream) => void;
-  let mediaReject!: (err: Error) => void;
-  const media = new Promise<MediaStream>((resolve, reject) => {
+  const media = new Promise<MediaStream>((resolve) => {
     mediaResolve = resolve;
-    mediaReject = reject;
   });
 
   const handle = fal.realtime.open(wma(spec.model), {
@@ -207,19 +297,33 @@ async function runDirector(spec: EpisodeSpec, opts: StartOptions): Promise<void>
           nextBeat += 1;
         }
       } else if (type === "error") {
-        failure = new Error(`director error ${message.code}: ${message.error}`);
-        mediaReject(failure);
+        const code = String(message.code ?? "unknown");
+        fail(
+          new DirectorError(
+            `director error ${code}: ${String(message.error ?? "")}`,
+            code,
+            !NON_RETRYABLE_CODES.has(code),
+          ),
+        );
       } else if (type === "prompt_rejected") {
-        failure = new Error(`director rejected prompt v${message.prompt_version}: ${message.reason}`);
-        mediaReject(failure);
+        fail(
+          new DirectorError(
+            `director rejected prompt v${message.prompt_version}: ${message.reason}`,
+            "prompt_rejected",
+            false,
+          ),
+        );
+      } else if (type === "stream_exhausted") {
+        end();
       }
     },
-    onState: (state) => emit("state", { state }),
-    onDiagnostic: (event) => emit("diagnostic", { event }),
-    onError: (error) => {
-      failure = error instanceof Error ? error : new Error(String(error));
-      mediaReject(failure);
+    onState: (state) => {
+      emit("state", { state });
+      if (state === "failed") fail(new DirectorError("session failed", "transport", true));
+      if (state === "closed") end();
     },
+    onDiagnostic: (event) => emit("diagnostic", { event }),
+    onError: (error) => fail(classify(error)),
   });
 
   handle.send({
@@ -233,16 +337,19 @@ async function runDirector(spec: EpisodeSpec, opts: StartOptions): Promise<void>
   });
   emit("configured_sent", { beats: spec.beats.length, duration: spec.duration });
 
-  const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error("no media within timeout")), opts.mediaTimeoutMs),
-  );
+  const noMedia = sleep(opts.mediaTimeoutMs).then(() => {
+    throw new DirectorError("no media within timeout", "no_media", true);
+  });
   try {
-    const stream = await Promise.race([media, timeout]);
-    await record(stream, spec.duration);
-    if (failure) throw failure;
+    const stream = await Promise.race([media, noMedia, cutoff.failed]);
+    await record(stream, spec.duration, opts.mediaTimeoutMs, cutoff);
   } finally {
     try {
       handle.send({ type: "stop" });
+      // Give the control channel a moment to flush the stop before teardown,
+      // otherwise the runner keeps the (billed) session open until its own
+      // timeout.
+      await sleep(500);
     } catch {
       // closing anyway
     }
@@ -253,11 +360,17 @@ async function runDirector(spec: EpisodeSpec, opts: StartOptions): Promise<void>
 
 window.startRecording = async (spec, opts) => {
   try {
-    if (opts.fake) await runFake(spec);
+    if (opts.fake) await runFake(spec, opts);
     else await runDirector(spec, opts);
     emit("done");
   } catch (err) {
-    emit("failed", { error: err instanceof Error ? err.message : String(err) });
-    throw err;
+    const e = classify(err);
+    emit("failed", {
+      error: e.message,
+      code: e.code,
+      retryable: e.retryable,
+      balanceLock: e.balanceLock,
+    });
+    throw e;
   }
 };

@@ -48,6 +48,19 @@ end against a local app in mock mode. `--once` processes a single job and exits.
 
 ## Notes
 
+- Run exactly one recorder per station. Each claim opens a billed session and
+  hands out a lease; `complete`/`fail` must present that lease, so a second
+  worker (or a stalled first one) cannot finish or requeue a job it no longer
+  owns.
+- A station with a real `FAL_KEY` refuses `RECORDER_FAKE=1` claims, so the
+  dry run cannot air a synthetic clip against a real purchase.
+- `--once` claims without refreshing the liveness flag, so it never puts
+  director lengths on sale by itself.
+- A job is handed out at most 3 times (counted at claim, not on reported
+  failure, because a crashed recorder reports nothing). Deterministic
+  rejections (`content_policy`, `prompt_rejected`, bad configure) stop after
+  the first attempt; a fal balance lock pauses all sales on the station.
+
 - Sessions bill a 60s minimum at fal, so the app only routes episodes above
   `MAX_TOTAL_DURATION` (45s) here. Sessions over 2 minutes need fal approval.
 - If the recorder dies mid-episode, the job's 15-minute lease expires and the

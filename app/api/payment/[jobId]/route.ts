@@ -1,3 +1,4 @@
+import { recorderAlive } from "@/lib/generation";
 import { getStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +19,11 @@ export async function GET(
   const invoiceReady =
     job.status === "awaiting_payment" &&
     Boolean(job.paymentId && job.title && job.videoPrompt && job.sats && job.bolt11);
+  // A director episode's invoice stays hidden while no recorder is polling:
+  // the recorder may have gone away between submit and checkout, and a paid
+  // job with nobody to record it would sit in the queue indefinitely.
+  const directorPaused =
+    invoiceReady && job.renderer === "director" && !(await recorderAlive());
 
   return Response.json({
     jobId: job.id,
@@ -26,12 +32,14 @@ export async function GET(
     reason: job.moderationReason,
     sats: job.sats,
     invoice:
-      invoiceReady
+      invoiceReady && !directorPaused
         ? { bolt11: job.bolt11, sats: job.sats }
         : null,
     clipId: job.clipId,
     renderer: job.renderer ?? "fal",
-    error: job.error,
-    failureStage: job.failureStage,
+    error: directorPaused
+      ? "The director is off set — checkout is paused until the recorder is back."
+      : job.error,
+    failureStage: directorPaused ? "invoice" : job.failureStage,
   });
 }

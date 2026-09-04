@@ -1,7 +1,13 @@
-import { randomUUID } from "crypto";
-import { timingSafeEqual } from "crypto";
-import { config } from "@/lib/config";
-import { RECORDER_ALIVE_FLAG, RECORDER_ALIVE_TTL, deferJob } from "@/lib/generation";
+import { randomUUID, timingSafeEqual } from "crypto";
+import { config, mockMode } from "@/lib/config";
+import { FAL_LOCK_FLAG, FAL_LOCK_TTL } from "@/lib/fal";
+import {
+  RECORDER_ALIVE_FLAG,
+  RECORDER_ALIVE_TTL,
+  deferJob,
+  failJobTerminal,
+  pruneMissingJob,
+} from "@/lib/generation";
 import { getStore, persistenceMisconfigured } from "@/lib/store";
 import { scheduleClip } from "@/lib/stream";
 import type { Clip, Job } from "@/lib/types";
@@ -13,17 +19,42 @@ export const dynamic = "force-dynamic";
  * Director is a live WebRTC stream, not a queue render, so a paid director
  * job waits in the generation queue until the recorder worker (recorder/)
  * claims it here, records the session to an mp4, uploads it, and reports
- * back. Everything is authenticated with RECORDER_SECRET. */
+ * back. Everything is authenticated with RECORDER_SECRET, and every
+ * complete/fail must present the lease it was handed at claim time so a
+ * recorder that overran its lease cannot finish or requeue a job another
+ * recorder now owns. */
 
 // A 120s episode plus negotiation, transcode and upload fits comfortably; an
 // interrupted recorder hands the job back when this expires.
 const DIRECTOR_LEASE_MS = 15 * 60_000;
-const CLAIM_SCAN_LIMIT = 20;
+// Wide enough that a fal backlog (drain refusing while fal is locked) or dead
+// members cannot hide the director jobs behind them.
+const CLAIM_SCAN_LIMIT = 50;
+// Every claim opens a billed live session (60s minimum), and a recorder that
+// crashes mid-episode never reports a failure, so attempts are counted here
+// rather than only in deferJob. Tighter than the fal path's retry cap.
+const MAX_CLAIM_ATTEMPTS = 3;
 
 type Body =
-  | { action: "claim" }
-  | { action: "complete"; jobId: string; videoUrl: string; duration?: number }
-  | { action: "fail"; jobId: string; error?: string };
+  | { action: "claim"; mode?: "director" | "fake"; keepAlive?: boolean }
+  | {
+      action: "complete";
+      jobId: string;
+      lease?: number;
+      videoUrl: string;
+      duration?: number;
+    }
+  | {
+      action: "fail";
+      jobId: string;
+      lease?: number;
+      error?: string;
+      code?: string;
+      /** false = the same input would fail again; do not spend another session. */
+      retryable?: boolean;
+      /** fal refused the session for lack of funds: pause all sales. */
+      balanceLock?: boolean;
+    };
 
 function authorized(request: Request): boolean {
   const secret = config.recorderSecret;
@@ -55,7 +86,7 @@ export async function POST(request: Request) {
 
   switch (body.action) {
     case "claim":
-      return claim();
+      return claim(body);
     case "complete":
       return complete(body);
     case "fail":
@@ -66,19 +97,42 @@ export async function POST(request: Request) {
 }
 
 /** Hand the recorder the oldest due director job, leased for one attempt. */
-async function claim() {
+async function claim(body: { mode?: string; keepAlive?: boolean }) {
   const store = getStore();
-  await store.setFlag(RECORDER_ALIVE_FLAG, RECORDER_ALIVE_TTL);
+  // A fake (canvas) recorder must never complete real purchases: only a
+  // station with no fal key (mock mode) may hand it jobs.
+  if (body.mode === "fake" && !mockMode.fal) {
+    return Response.json(
+      { error: "fake recorder refused: this station has a real FAL_KEY" },
+      { status: 403 },
+    );
+  }
+  // A one-shot run (--once) does not keep polling, so it must not advertise
+  // director lengths for sale.
+  if (body.keepAlive !== false) {
+    await store.setFlag(RECORDER_ALIVE_FLAG, RECORDER_ALIVE_TTL);
+  }
+
   const jobIds = await store.claimPendingGenerationJobIds(CLAIM_SCAN_LIMIT);
   for (const jobId of jobIds) {
     const pending = await store.getJob(jobId);
-    if (pending?.renderer !== "director") continue;
+    if (!pending) {
+      await pruneMissingJob(jobId);
+      continue;
+    }
+    if (pending.renderer !== "director") continue;
     const job = await store.claimJobGeneration(jobId, DIRECTOR_LEASE_MS);
     if (!job) continue;
     if (!job.directorPremise || !job.scenePrompts?.length || !job.duration) {
-      await deferJob(job, new Error("director job is missing its premise or beats"));
+      await failJobTerminal(job, "director job is missing its premise or beats");
       continue;
     }
+    job.claimAttempts = (job.claimAttempts ?? 0) + 1;
+    if (job.claimAttempts > MAX_CLAIM_ATTEMPTS) {
+      await failJobTerminal(job, "recorder gave up: too many live sessions for one episode");
+      continue;
+    }
+    await store.putJob(job);
     return Response.json({
       status: "claimed",
       job: {
@@ -91,35 +145,50 @@ async function claim() {
         model: config.directorModel,
         resolution: config.clipResolution.toLowerCase(),
         aspectRatio: "16:9",
-        attempt: (job.retries ?? 0) + 1,
-        leaseUntil: job.generationLeaseUntil,
+        attempt: job.claimAttempts,
+        lease: job.generationLeaseUntil,
       },
     });
   }
   return Response.json({ status: "idle" });
 }
 
-async function loadLeased(jobId: string): Promise<Job | Response> {
+/** Load a director job and check the caller still holds its lease. */
+async function loadLeased(
+  jobId: string,
+  lease: number | undefined,
+): Promise<Job | Response> {
   const store = getStore();
   const job = await store.getJob(jobId);
   if (!job) return Response.json({ error: "unknown job" }, { status: 404 });
   if (job.renderer !== "director") {
     return Response.json({ error: "not a director job" }, { status: 409 });
   }
-  return job;
-}
-
-/** The recorder finished: schedule the clip. One purchase = one Clip. */
-async function complete(body: { jobId: string; videoUrl: string; duration?: number }) {
-  const loaded = await loadLeased(body.jobId);
-  if (loaded instanceof Response) return loaded;
-  const job = loaded;
   if (job.status === "done") {
     return Response.json({ status: "done", clipId: job.clipId });
   }
   if (job.status !== "generating") {
     return Response.json({ error: `job is ${job.status}, not generating` }, { status: 409 });
   }
+  if (!lease || job.generationLeaseUntil !== lease) {
+    return Response.json({ error: "stale lease: another recorder owns this job" }, { status: 409 });
+  }
+  return job;
+}
+
+/** The recorder finished: schedule the clip. One purchase = one Clip, even
+ * if this call is retried after a partial failure. */
+async function complete(body: {
+  jobId: string;
+  lease?: number;
+  videoUrl: string;
+  duration?: number;
+}) {
+  const loaded = await loadLeased(body.jobId, body.lease);
+  if (loaded instanceof Response) return loaded;
+  const job = loaded;
+  const store = getStore();
+
   let url: URL;
   try {
     url = new URL(body.videoUrl);
@@ -129,38 +198,62 @@ async function complete(body: { jobId: string; videoUrl: string; duration?: numb
   if (url.protocol !== "https:") {
     return Response.json({ error: "videoUrl must be https" }, { status: 400 });
   }
-  const duration = Number(body.duration);
-  const clip = await scheduleClip({
-    id: randomUUID(),
-    kind: "paid",
-    idea: job.idea,
-    title: job.title,
-    videoPrompt: job.videoPrompt,
-    videoUrl: url.toString(),
-    duration: Number.isFinite(duration) && duration > 0 ? Math.round(duration) : job.duration ?? 0,
-    credit: job.credit,
-    createdAt: Date.now(),
-  } satisfies Omit<Clip, "airAt">);
 
-  const store = getStore();
+  // Checkpoint the outcome before scheduling: a retry after a crash between
+  // these writes finds the clip id already fixed and only schedules it if
+  // the previous attempt did not get that far.
+  if (!job.clipId || !job.directorVideoUrl) {
+    job.clipId = randomUUID();
+    job.directorVideoUrl = url.toString();
+    await store.putJob(job);
+  }
+  const clips = await store.getClips();
+  let clip = clips.find((c) => c.id === job.clipId);
+  if (!clip) {
+    const duration = Number(body.duration);
+    clip = await scheduleClip({
+      id: job.clipId,
+      kind: "paid",
+      idea: job.idea,
+      title: job.title,
+      videoPrompt: job.videoPrompt,
+      videoUrl: job.directorVideoUrl,
+      duration:
+        Number.isFinite(duration) && duration > 0 ? Math.round(duration) : job.duration ?? 0,
+      credit: job.credit,
+      createdAt: Date.now(),
+    } satisfies Omit<Clip, "airAt">);
+  }
+
   job.status = "done";
-  job.clipId = clip.id;
   delete job.generationLeaseUntil;
   await store.putJob(job);
   return Response.json({ status: "done", clipId: clip.id, airAt: clip.airAt });
 }
 
-/** The recorder gave up on this attempt: requeue (bounded, like fal renders). */
-async function fail(body: { jobId: string; error?: string }) {
-  const loaded = await loadLeased(body.jobId);
+/** The recorder gave up on this attempt. Retryable failures requeue
+ * (bounded by MAX_CLAIM_ATTEMPTS); deterministic ones stop immediately so
+ * the same rejected prompt is not billed again and again. */
+async function fail(body: {
+  jobId: string;
+  lease?: number;
+  error?: string;
+  code?: string;
+  retryable?: boolean;
+  balanceLock?: boolean;
+}) {
+  const loaded = await loadLeased(body.jobId, body.lease);
   if (loaded instanceof Response) return loaded;
   const job = loaded;
-  if (job.status !== "generating") {
-    return Response.json({ status: job.status });
+  const detail = `recorder: ${String(body.error ?? "unknown error").slice(0, 300)}`;
+
+  if (body.balanceLock) {
+    await getStore().setFlag(FAL_LOCK_FLAG, FAL_LOCK_TTL, detail);
   }
-  const status = await deferJob(
-    job,
-    new Error(`recorder: ${String(body.error ?? "unknown error").slice(0, 300)}`),
-  );
+  if (body.retryable === false) {
+    await failJobTerminal(job, detail);
+    return Response.json({ status: "failed" });
+  }
+  const status = await deferJob(job, new Error(detail));
   return Response.json({ status });
 }

@@ -123,9 +123,10 @@ cd /vercel/sandbox
 if [ "\${RECORDER_PREBUILT:-}" != "1" ]; then
   sudo dnf install -y -q --skip-broken git xz ${CHROMIUM_SYSTEM_DEPS} >/dev/null 2>&1 || true
   sudo ldconfig || true
-  if ! command -v ffmpeg >/dev/null 2>&1; then
+  if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
     (cd /tmp && curl -sSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ \\
-      && sudo install -m 755 ffmpeg-*-static/ffmpeg /usr/local/bin/ffmpeg)
+      && sudo install -m 755 ffmpeg-*-static/ffmpeg /usr/local/bin/ffmpeg \\
+      && sudo install -m 755 ffmpeg-*-static/ffprobe /usr/local/bin/ffprobe)
   fi
 fi
 if [ ! -d recorder ]; then

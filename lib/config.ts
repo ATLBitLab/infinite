@@ -28,6 +28,11 @@ export const config = {
 
   // Anthropic — ideas, moderation, prompt expansion
   anthropicKey: process.env.ANTHROPIC_API_KEY ?? "",
+  // Tweet clippings: an x.com link in a pitch pulls that post plus the
+  // thread it replies to (public embed JSON, no X API key) into the
+  // writers' room as source material. TWEET_CONTEXT=0 disables.
+  tweetContext: (process.env.TWEET_CONTEXT ?? "1") !== "0",
+  tweetMaxHops: intEnv("TWEET_MAX_HOPS", 6), // parents walked above the linked post
 
   // Voltage — bitcoin payments
   voltage: {

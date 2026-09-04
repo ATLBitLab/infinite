@@ -43,25 +43,50 @@ export async function submissionPriceSats(
   return Math.max(100, Math.ceil(sats / 100) * 100);
 }
 
+/** True when the director tier is on: durations above the chained-scene
+ * ceiling are sold as one continuous H3 Max Director take. */
+export function directorEnabled(): boolean {
+  return config.directorMaxDuration > config.maxTotalDuration;
+}
+
+/** Longest purchasable episode across both render paths. */
+export function maxPurchasableDuration(): number {
+  return directorEnabled() ? config.directorMaxDuration : config.maxTotalDuration;
+}
+
+/** Durations the chained-scene path cannot serve go to the director. */
+export function isDirectorDuration(durationSec: number): boolean {
+  return directorEnabled() && durationSec > config.maxTotalDuration;
+}
+
 export function clampDuration(durationSec: number): number {
   const d = Math.round(Number(durationSec));
   if (!Number.isFinite(d)) return config.clipDuration;
-  return Math.min(config.maxTotalDuration, Math.max(config.clipMinDuration, d));
+  return Math.min(maxPurchasableDuration(), Math.max(config.clipMinDuration, d));
 }
 
 /** Exact sat price for every purchasable duration, for UI display. */
 export async function priceTableSats(): Promise<Record<number, number>> {
   const table: Record<number, number> = {};
-  for (let d = config.clipMinDuration; d <= config.maxTotalDuration; d++) {
+  for (let d = config.clipMinDuration; d <= maxPurchasableDuration(); d++) {
     table[d] = await submissionPriceSats(d);
   }
   return table;
 }
 
-/** Split a purchased duration into fal-sized scene lengths (each 5–15s).
- * 20s → [10, 10]; 45s → [15, 15, 15]. */
+/** Split a purchased duration into render segments.
+ * Chained scenes are fal-sized (each 5–15s): 20s → [10, 10]; 45s → [15, 15, 15].
+ * Director episodes are 10s beats matching the model's chunk cadence:
+ * 95s → [10 ×9, 5]. */
 export function splitSegments(totalSec: number): number[] {
   const total = clampDuration(totalSec);
+  if (isDirectorDuration(total)) {
+    const beat = config.directorBeatSeconds;
+    const n = Math.ceil(total / beat);
+    return Array.from({ length: n }, (_, i) =>
+      i < n - 1 ? beat : total - beat * (n - 1),
+    );
+  }
   if (total <= config.clipDuration) return [total];
   const n = Math.ceil(total / config.clipDuration);
   const base = Math.floor(total / n);

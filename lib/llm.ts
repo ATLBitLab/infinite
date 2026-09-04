@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config, mockMode, STYLE_PROMPT } from "./config";
+import type { JobRenderer } from "./types";
 
 /** LLM layer: idea generation, content moderation, and video-prompt expansion.
  * Falls back to canned behavior when ANTHROPIC_API_KEY is unset. */
@@ -15,8 +16,11 @@ export interface ModerationResult {
   title: string;
   videoPrompt: string;
   /** One prompt per scene; single-scene clips have exactly one entry.
-   * Multi-scene episodes share a character sheet for visual continuity. */
+   * Multi-scene episodes share a character sheet for visual continuity.
+   * Director episodes: one beat per 10s chunk of the live session. */
   scenePrompts: string[];
+  /** Director episodes only: the show bible the session is configured with. */
+  directorPremise?: string;
 }
 
 const VIBE = `The stream is "INFINITE" — an endless AI cartoon channel that pokes fun at
@@ -85,16 +89,24 @@ function parseJson<T>(raw: string): T {
 
 /** Moderate a submitted idea and write the episode in one call.
  * `segments` holds the scene lengths in seconds — one entry for a normal
- * clip, several for a long episode rendered as chained scenes. */
+ * clip, several for a long episode rendered as chained scenes.
+ * `renderer: "director"` writes a show bible plus one beat per segment for a
+ * continuous H3 Max Director session instead of independent scene renders. */
 export async function moderateAndExpand(
   idea: string,
   segments: number[] = [config.clipDuration],
   signal?: AbortSignal,
+  renderer: JobRenderer = "fal",
 ): Promise<ModerationResult> {
-  if (mockMode.llm) return mockModerate(idea, segments);
+  if (mockMode.llm) return mockModerate(idea, segments, renderer);
 
+  const director = renderer === "director";
   const multi = segments.length > 1;
-  const sceneSpec = multi
+  const total = segments.reduce((sum, s) => sum + s, 0);
+  const sceneSpec = director
+    ? `"premise": string,       // the show bible for a ${total}-second continuous take: 3-5 sentences naming and visually describing every recurring character (look, outfit, one defining trait) and the setting, plus the comedic situation. The video model is configured with this ONCE and keeps it in memory for the whole episode, so anything that must stay consistent goes here. Do not describe the art style; that is appended separately.
+  "beats": [string]         // exactly ${segments.length} beats, one per array entry, each covering about ${segments[0]} seconds of screen time in order. The stream is continuous (no cuts between beats), so each beat is a direction to the live director: 1-3 sentences of concrete visual action that continues from the previous beat, escalating toward a punchline in the final beat. Refer to characters by the names in the premise. Include any short spoken line.`
+    : multi
     ? `"characterSheet": string, // 1-2 sentences naming and visually describing the recurring characters/setting, reused verbatim in every scene render
   "scenes": [string]        // exactly ${segments.length} scene prompts, one per array entry. Scene i is animated for these lengths in order: ${segments.join("s, ")}s. Together they form ONE escalating sketch; each scene starts EXACTLY where the previous ended (the renders are chained frame-to-frame), so write the beats as continuous action with an escalating gag and a punchline in the final scene. Each entry: 2-4 sentences of concrete visual action plus any short spoken line.`
     : `"videoPrompt": string     // 2-4 sentences describing ONE self-contained comedic scene for a ${segments[0]}-second animated clip: characters, setting, action, a visual punchline. Pace it for ${segments[0]} seconds. Include any short spoken line or sound gag. Do not describe the art style; that is appended separately.`;
@@ -118,7 +130,12 @@ Respond with ONLY a JSON object:
     signal,
   );
   const parsed = parseJson<
-    ModerationResult & { characterSheet?: string; scenes?: string[] }
+    ModerationResult & {
+      characterSheet?: string;
+      scenes?: string[];
+      premise?: string;
+      beats?: string[];
+    }
   >(result);
 
   const base = {
@@ -126,6 +143,21 @@ Respond with ONLY a JSON object:
     reason: String(parsed.reason ?? ""),
     title: String(parsed.title ?? "Untitled").slice(0, 80),
   };
+  if (director) {
+    const premise = `${String(parsed.premise ?? "").trim()} ${STYLE_PROMPT}`.trim();
+    const beats = (Array.isArray(parsed.beats) ? parsed.beats : [])
+      .slice(0, segments.length)
+      .map((b) => String(b).trim());
+    if (base.allowed && (beats.length !== segments.length || !parsed.premise)) {
+      throw new Error("episode writer returned wrong beat count");
+    }
+    return {
+      ...base,
+      videoPrompt: premise,
+      scenePrompts: beats,
+      directorPremise: premise,
+    };
+  }
   if (multi) {
     const sheet = String(parsed.characterSheet ?? "").trim();
     const scenes = (Array.isArray(parsed.scenes) ? parsed.scenes : [])
@@ -163,10 +195,26 @@ a scene, not a topic. Respond with ONLY a JSON object:
 
 const BLOCKLIST = ["kill", "murder", "nazi", "rape", "porn", "sex", "gore"];
 
-function mockModerate(idea: string, segments: number[]): ModerationResult {
+function mockModerate(
+  idea: string,
+  segments: number[],
+  renderer: JobRenderer = "fal",
+): ModerationResult {
   const lower = idea.toLowerCase();
   const blocked = BLOCKLIST.some((w) => lower.includes(w));
   const videoPrompt = `${idea}. ${STYLE_PROMPT}`;
+  if (renderer === "director") {
+    return {
+      allowed: !blocked,
+      reason: blocked
+        ? "Standards & Practices says: keep it playful, champ."
+        : "Greenlit by a mock producer (no LLM key set).",
+      title: idea.split(/\s+/).slice(0, 6).join(" "),
+      videoPrompt,
+      directorPremise: videoPrompt,
+      scenePrompts: segments.map((_, i) => `${idea} (beat ${i + 1})`),
+    };
+  }
   return {
     allowed: !blocked,
     reason: blocked

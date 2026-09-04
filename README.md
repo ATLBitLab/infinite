@@ -57,6 +57,22 @@ fal MiniMax H3 Max: **$0.05/sec @ 480P, $0.08/sec @ 768P** → a 15s 768P clip c
 itself plus ~0.6 house clips. House filler is capped per day; the more people submit,
 the less filler you need.
 
+## Long episodes: H3 Max Director (optional)
+
+Episodes up to 45s are rendered as frame-chained scenes through fal's queue
+API. Above that, character and plot continuity falls apart, so the optional
+**director tier** sells 46–120s episodes as ONE continuous take from
+[`minimax/h3-max/director`](https://fal.ai/models/minimax/h3-max/director),
+which keeps up to two minutes of story context natively.
+
+Director is a live WebRTC stream, not a file API, so those episodes are
+recorded by the worker in [`recorder/`](recorder/README.md) rather than inside
+`/api/generate`. Enable it with `DIRECTOR_MAX_DURATION=120` and a shared
+`RECORDER_SECRET`, then run the recorder somewhere with `FAL_KEY`. The long
+durations only appear on the slider while a recorder is polling. Sessions
+bill a 60s minimum ($0.02/s promo until 2026-09-14, $0.08/s list), and the
+writers' room writes a show bible plus one beat per 10s chunk.
+
 ## Develop
 
 ```bash

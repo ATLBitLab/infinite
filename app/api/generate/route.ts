@@ -9,6 +9,7 @@ import {
   isBalanceLock,
   mergeVideos,
 } from "@/lib/fal";
+import { deferJob, pruneMissingJob } from "@/lib/generation";
 import { generateIdea } from "@/lib/llm";
 import { moderateAndExpand } from "@/lib/llm";
 import { scheduleClip } from "@/lib/stream";
@@ -20,11 +21,14 @@ export const dynamic = "force-dynamic";
 // Video generation is fast (~9-15s) but leave generous headroom.
 export const maxDuration = 300;
 
-const MAX_JOB_RETRIES = 5;
 // Longer than this route's maximum lifetime. If an invocation is terminated,
 // a viewer can safely reclaim the job after the lease expires.
 const GENERATION_LEASE_MS = 330_000;
 const GENERATION_DRAIN_LOCK_SECONDS = 330;
+const DRAIN_RENDER_LIMIT = 2;
+// Wide enough that a backlog of director jobs (recorder down) or dead
+// members cannot hide the fal renders behind them.
+const DRAIN_SCAN_LIMIT = 50;
 
 /** Run a generation.
  *  - {jobId}: generate the clip for a PAID job.
@@ -111,32 +115,35 @@ async function runGeneration(job: Job) {
   return clip;
 }
 
-/** A paid job must never die just because generation failed: put it back to
- * "paid", queue it for retry, and flag fal as locked when it's a balance
- * problem so submissions pause instead of eating more money. */
-async function deferJob(job: Job, err: unknown) {
-  const store = getStore();
-  console.error(`generation failed for job ${job.id}:`, err);
-  if (isBalanceLock(err)) {
-    await store.setFlag(FAL_LOCK_FLAG, FAL_LOCK_TTL, falErrorDetail(err));
-  }
-  job.retries = (job.retries ?? 0) + 1;
-  if (job.retries >= MAX_JOB_RETRIES) {
-    job.status = "failed";
-    job.error = "generation failed repeatedly";
-    job.failureStage = "generation";
-    delete job.generationLeaseUntil;
-    await store.putJob(job);
-    return Response.json({ error: "generation failed repeatedly" }, { status: 500 });
-  }
-  job.status = "paid";
-  delete job.generationLeaseUntil;
-  await store.putJob(job);
-  return Response.json({ status: "deferred" }, { status: 503 });
+async function deferJobResponse(job: Job, err: unknown) {
+  const status = await deferJob(job, err);
+  return status === "failed"
+    ? Response.json({ error: "generation failed repeatedly" }, { status: 500 })
+    : Response.json({ status: "deferred" }, { status: 503 });
 }
 
 async function generateForJob(jobId: string) {
   const store = getStore();
+  const existing = await store.getJob(jobId);
+  if (!existing) {
+    return Response.json({ error: "unknown job" }, { status: 404 });
+  }
+  // Director episodes are live sessions recorded by the recorder worker
+  // (/api/director), not fal queue renders. Leave the job queued for it; the
+  // client keeps polling /api/payment/<id> until the recorder marks it done.
+  if (existing.renderer === "director") {
+    if (existing.status === "done") {
+      return Response.json({ status: "done", clipId: existing.clipId });
+    }
+    if (existing.status === "paid" || existing.status === "generating") {
+      return Response.json({ status: "generating", renderer: "director" });
+    }
+    return Response.json(
+      { error: `job is ${existing.status}, not paid` },
+      { status: 409 },
+    );
+  }
+
   const job = await store.claimJobGeneration(jobId, GENERATION_LEASE_MS);
   if (!job) {
     const current = await store.getJob(jobId);
@@ -159,7 +166,7 @@ async function generateForJob(jobId: string) {
     const clip = await runGeneration(job);
     return Response.json({ status: "done", clipId: clip.id, airAt: clip.airAt });
   } catch (err) {
-    return deferJob(job, err);
+    return deferJobResponse(job, err);
   }
 }
 
@@ -179,10 +186,21 @@ async function drainDeferred() {
 
   const results: { jobId: string; status: string }[] = [];
   try {
-    const jobIds = await store.claimPendingGenerationJobIds(2);
+    // Director jobs share the queue but belong to the recorder worker; look
+    // past them so they never starve the fal renders behind them.
+    const jobIds = await store.claimPendingGenerationJobIds(DRAIN_SCAN_LIMIT);
+    let rendered = 0;
     for (const jobId of jobIds) {
+      if (rendered >= DRAIN_RENDER_LIMIT) break;
+      const pending = await store.getJob(jobId);
+      if (!pending) {
+        await pruneMissingJob(jobId);
+        continue;
+      }
+      if (pending.renderer === "director") continue;
       const job = await store.claimJobGeneration(jobId, GENERATION_LEASE_MS);
       if (!job) continue;
+      rendered += 1;
       try {
         await runGeneration(job);
         results.push({ jobId, status: "done" });

@@ -1,8 +1,9 @@
 import { nowPlaying } from "@/lib/stream";
-import { priceTableSats, submissionPriceSats } from "@/lib/price";
+import { directorEnabled, maxPurchasableDuration, priceTableSats, submissionPriceSats } from "@/lib/price";
 import { config, mockMode } from "@/lib/config";
 import { getStore, persistenceMisconfigured, usingRedis } from "@/lib/store";
 import { FAL_LOCK_FLAG } from "@/lib/fal";
+import { recorderAlive } from "@/lib/generation";
 
 export const dynamic = "force-dynamic";
 
@@ -18,14 +19,18 @@ export async function GET(request: Request) {
     .slice(0, 30);
   if (vid) await store.touchPresence(vid, vn || "viewer");
 
-  const [now, priceSats, priceTable, falLock, viewers, activity] = await Promise.all([
-    nowPlaying(),
-    submissionPriceSats(),
-    priceTableSats(),
-    store.getFlagInfo(FAL_LOCK_FLAG),
-    store.getPresence(),
-    store.getActivity(),
-  ]);
+  const [now, priceSats, priceTable, falLock, viewers, activity, recorderUp] =
+    await Promise.all([
+      nowPlaying(),
+      submissionPriceSats(),
+      priceTableSats(),
+      store.getFlagInfo(FAL_LOCK_FLAG),
+      store.getPresence(),
+      store.getActivity(),
+      recorderAlive(),
+    ]);
+  // Director-length episodes are only on sale while a recorder is polling.
+  const directorOpen = directorEnabled() && recorderUp;
   const falPaused = Boolean(falLock);
   const misconfigured = persistenceMisconfigured();
   return Response.json({
@@ -34,7 +39,12 @@ export async function GET(request: Request) {
     needsBootstrap: now.needsBootstrap && !misconfigured,
     priceSats,
     priceTable,
-    durations: { min: config.clipMinDuration, max: config.maxTotalDuration },
+    durations: {
+      min: config.clipMinDuration,
+      max: directorOpen ? maxPurchasableDuration() : config.maxTotalDuration,
+      // Above this, an episode is one continuous H3 Max Director take.
+      directorAbove: directorOpen ? config.maxTotalDuration : undefined,
+    },
     mockMode,
     falPaused,
     falPausedReason: falLock?.reason || undefined,

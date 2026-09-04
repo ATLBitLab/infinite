@@ -26,20 +26,50 @@ async function btcUsd(): Promise<number> {
   return cached?.rate ?? FALLBACK_BTC_USD;
 }
 
+// H3 Max Director generates 10s chunks of which ~8.5s is new playback (the
+// rest is continuation context), and fal bills every generated second. A
+// session ends itself after 13 chunks (observed 2026-09-04: 103s delivered,
+// ~130s billed), so that is the most one purchase can cost.
+const DIRECTOR_CHUNK_SEC = 10;
+const DIRECTOR_CHUNK_PLAYBACK_SEC = 8.5;
+const DIRECTOR_SESSION_MAX_CHUNKS = 13;
+
+/** What one purchase of this length costs us, in USD, at the configured
+ * rates: fal generation (plus per-scene ffmpeg calls for chained episodes,
+ * or the sandbox VM for director episodes) and the writers' room. */
+export function estimatedCostUsd(durationSec: number = config.clipDuration): number {
+  const d = clampDuration(durationSec);
+  const c = config.cost;
+  if (isDirectorDuration(d)) {
+    const chunks = Math.min(
+      DIRECTOR_SESSION_MAX_CHUNKS,
+      Math.ceil(d / DIRECTOR_CHUNK_PLAYBACK_SEC),
+    );
+    const billedSec = Math.max(c.directorMinBilledSec, chunks * DIRECTOR_CHUNK_SEC);
+    return billedSec * c.directorUsdPerSec + c.sandboxUsdPerEpisode + c.llmUsdPerJob;
+  }
+  const segments = splitSegments(d);
+  const seconds = segments.reduce((sum, s) => sum + s, 0);
+  const overhead = segments.length > 1 ? segments.length * c.sceneOverheadUsd : 0;
+  return seconds * c.videoUsdPerSec + overhead + c.llmUsdPerJob;
+}
+
 /** Price for a clip of the given duration. PRICE_SATS / PRICE_USD define the
  * price of a full-length clip (CLIP_DURATION); shorter clips scale linearly
- * per second. Rounded up to the nearest 100 sats with a floor of 100. */
+ * per second. Never below estimatedCostUsd × PRICE_MARKUP, so a purchase
+ * always covers what fal and the sandbox charge us. Rounded up to the
+ * nearest 100 sats with a floor of 100. */
 export async function submissionPriceSats(
   durationSec: number = config.clipDuration,
 ): Promise<number> {
-  const fraction = clampDuration(durationSec) / config.clipDuration;
-  let sats: number;
-  if (config.priceSats > 0) {
-    sats = config.priceSats * fraction;
-  } else {
-    const rate = await btcUsd();
-    sats = ((config.priceUsd * fraction) / rate) * 100_000_000;
-  }
+  const d = clampDuration(durationSec);
+  const fraction = d / config.clipDuration;
+  const rate = await btcUsd();
+  const usdToSats = (usd: number) => (usd / rate) * 100_000_000;
+  const listSats =
+    config.priceSats > 0 ? config.priceSats * fraction : usdToSats(config.priceUsd * fraction);
+  const floorSats = usdToSats(estimatedCostUsd(d) * config.cost.markup);
+  const sats = Math.max(listSats, floorSats);
   return Math.max(100, Math.ceil(sats / 100) * 100);
 }
 

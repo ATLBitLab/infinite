@@ -1,4 +1,4 @@
-import { recorderAlive } from "@/lib/generation";
+import { directorAvailable } from "@/lib/generation";
 import { getStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +23,7 @@ export async function GET(
   // the recorder may have gone away between submit and checkout, and a paid
   // job with nobody to record it would sit in the queue indefinitely.
   const directorPaused =
-    invoiceReady && job.renderer === "director" && !(await recorderAlive());
+    invoiceReady && job.renderer === "director" && !(await directorAvailable());
 
   return Response.json({
     jobId: job.id,

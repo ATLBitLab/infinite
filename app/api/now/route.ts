@@ -3,7 +3,7 @@ import { directorEnabled, maxPurchasableDuration, priceTableSats, submissionPric
 import { config, mockMode } from "@/lib/config";
 import { getStore, persistenceMisconfigured, usingRedis } from "@/lib/store";
 import { FAL_LOCK_FLAG } from "@/lib/fal";
-import { recorderAlive } from "@/lib/generation";
+import { directorAvailable } from "@/lib/generation";
 
 export const dynamic = "force-dynamic";
 
@@ -27,9 +27,9 @@ export async function GET(request: Request) {
       store.getFlagInfo(FAL_LOCK_FLAG),
       store.getPresence(),
       store.getActivity(),
-      recorderAlive(),
+      directorAvailable(),
     ]);
-  // Director-length episodes are only on sale while a recorder is polling.
+  // Director-length episodes are only on sale while something will record them.
   const directorOpen = directorEnabled() && recorderUp;
   const falPaused = Boolean(falLock);
   const misconfigured = persistenceMisconfigured();

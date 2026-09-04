@@ -11,6 +11,8 @@
     "@anthropic-ai/sdk": "^0.122.0",
     "@fal-ai/client": "^1.10.1",
     "@upstash/redis": "^1.38.3",
+    "@vercel/sandbox": "^3.2.1",
+    "aws4fetch": "^1.0.20",
     "next": "16.3.4",
     "nostr-tools": "^2.25.1",
     "qrcode.react": "^4.2.0",

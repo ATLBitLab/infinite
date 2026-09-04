@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { clampDuration, isDirectorDuration, splitSegments } from "@/lib/price";
 import { getStore, persistenceMisconfigured } from "@/lib/store";
 import { FAL_LOCK_FLAG } from "@/lib/fal";
-import { recorderAlive } from "@/lib/generation";
+import { directorAvailable } from "@/lib/generation";
 import { config } from "@/lib/config";
 import { prepareSubmission } from "@/lib/submission-preflight";
 import type { Job } from "@/lib/types";
@@ -52,10 +52,11 @@ export async function POST(request: Request) {
   if (idea.length < 5) {
     return Response.json({ error: "Give us a little more than that." }, { status: 400 });
   }
-  // Director episodes only exist if a recorder worker is polling right now;
-  // never take sats for a live session nobody would record.
+  // Director episodes only exist if something will record them (a polling
+  // worker or a sandbox we can spawn); never take sats for a live session
+  // nobody would record.
   const renderer = isDirectorDuration(duration) ? "director" : "fal";
-  if (renderer === "director" && !(await recorderAlive())) {
+  if (renderer === "director" && !(await directorAvailable())) {
     return Response.json(
       { error: `The director is off set right now — episodes up to ${config.maxTotalDuration}s are still open.` },
       { status: 503 },

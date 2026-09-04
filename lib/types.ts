@@ -9,7 +9,12 @@ export interface Clip {
   title: string;
   /** The full expanded prompt sent to the video model. */
   videoPrompt: string;
+  /** Where the player loads the mp4 from: our R2 archive when configured,
+   * otherwise the fal CDN URL the render produced. */
   videoUrl: string;
+  /** The fal CDN URL the render produced, kept as a fallback once videoUrl
+   * points at our own archive. */
+  sourceUrl?: string;
   /** Duration in seconds. */
   duration: number;
   /** Optional credit line, e.g. a name or npub. */

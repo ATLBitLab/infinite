@@ -1,4 +1,5 @@
 import { randomUUID, timingSafeEqual } from "crypto";
+import { after } from "next/server";
 import { config, mockMode } from "@/lib/config";
 import { FAL_LOCK_FLAG, FAL_LOCK_TTL } from "@/lib/fal";
 import {
@@ -8,11 +9,15 @@ import {
   failJobTerminal,
   pruneMissingJob,
 } from "@/lib/generation";
+import { releaseRecorderSandbox } from "@/lib/sandbox";
 import { getStore, persistenceMisconfigured } from "@/lib/store";
+import { archiveOrKeep } from "@/lib/storage";
 import { scheduleClip } from "@/lib/stream";
 import type { Clip, Job } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+// Completing an episode copies a 25+ MB mp4 into the archive.
+export const maxDuration = 120;
 
 /** Recorder worker API for H3 Max Director episodes.
  *
@@ -36,7 +41,13 @@ const CLAIM_SCAN_LIMIT = 50;
 const MAX_CLAIM_ATTEMPTS = 3;
 
 type Body =
-  | { action: "claim"; mode?: "director" | "fake"; keepAlive?: boolean }
+  | {
+      action: "claim";
+      mode?: "director" | "fake";
+      keepAlive?: boolean;
+      /** A sandbox recorder exists for exactly one job: claim only that one. */
+      jobId?: string;
+    }
   | {
       action: "complete";
       jobId: string;
@@ -97,7 +108,7 @@ export async function POST(request: Request) {
 }
 
 /** Hand the recorder the oldest due director job, leased for one attempt. */
-async function claim(body: { mode?: string; keepAlive?: boolean }) {
+async function claim(body: { mode?: string; keepAlive?: boolean; jobId?: string }) {
   const store = getStore();
   // A fake (canvas) recorder must never complete real purchases: only a
   // station with no fal key (mock mode) may hand it jobs.
@@ -113,7 +124,9 @@ async function claim(body: { mode?: string; keepAlive?: boolean }) {
     await store.setFlag(RECORDER_ALIVE_FLAG, RECORDER_ALIVE_TTL);
   }
 
-  const jobIds = await store.claimPendingGenerationJobIds(CLAIM_SCAN_LIMIT);
+  const jobIds = body.jobId
+    ? [body.jobId]
+    : await store.claimPendingGenerationJobIds(CLAIM_SCAN_LIMIT);
   for (const jobId of jobIds) {
     const pending = await store.getJob(jobId);
     if (!pending) {
@@ -211,13 +224,15 @@ async function complete(body: {
   let clip = clips.find((c) => c.id === job.clipId);
   if (!clip) {
     const duration = Number(body.duration);
+    const { videoUrl, sourceUrl } = await archiveOrKeep(job.clipId, job.directorVideoUrl);
     clip = await scheduleClip({
       id: job.clipId,
       kind: "paid",
       idea: job.idea,
       title: job.title,
       videoPrompt: job.videoPrompt,
-      videoUrl: job.directorVideoUrl,
+      videoUrl,
+      sourceUrl,
       duration:
         Number.isFinite(duration) && duration > 0 ? Math.round(duration) : job.duration ?? 0,
       credit: job.credit,
@@ -228,7 +243,14 @@ async function complete(body: {
   job.status = "done";
   delete job.generationLeaseUntil;
   await store.putJob(job);
+  releaseSandbox(job);
   return Response.json({ status: "done", clipId: clip.id, airAt: clip.airAt });
+}
+
+/** A sandbox recorder has nothing left to do once it has reported; stop it
+ * after this response is sent so it is not billed until its timeout. */
+function releaseSandbox(job: Job) {
+  after(() => releaseRecorderSandbox(job.id));
 }
 
 /** The recorder gave up on this attempt. Retryable failures requeue
@@ -252,8 +274,12 @@ async function fail(body: {
   }
   if (body.retryable === false) {
     await failJobTerminal(job, detail);
+    releaseSandbox(job);
     return Response.json({ status: "failed" });
   }
   const status = await deferJob(job, new Error(detail));
+  // A requeued job gets a fresh sandbox from the next drain/generate call;
+  // this one has already spent its session.
+  releaseSandbox(job);
   return Response.json({ status });
 }

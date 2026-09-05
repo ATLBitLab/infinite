@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Bungee, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 
@@ -34,6 +34,15 @@ export const metadata: Metadata = {
     title: TITLE,
     description: DESCRIPTION,
   },
+};
+
+// viewport-fit=cover lets the bottom bar pad itself past the iPhone home
+// indicator (see pb-[env(safe-area-inset-bottom)] on the bars).
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#0d0b0e",
 };
 
 export default function RootLayout({

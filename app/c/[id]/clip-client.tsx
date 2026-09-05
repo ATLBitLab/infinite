@@ -30,8 +30,40 @@ export default function ClipClient({
   }, []);
 
   return (
-    <main className="relative h-dvh w-dvw overflow-hidden bg-void">
-      <div className="scanlines absolute inset-0" onClick={() => !soundOn && setSound(true)}>
+    <main className="relative flex h-dvh w-dvw flex-col overflow-hidden bg-void md:block">
+      {/* ---- top bar ---- */}
+      <div className="relative z-10 flex shrink-0 items-center justify-between gap-2 px-3 py-2 md:absolute md:inset-x-0 md:top-0 md:p-4">
+        <div className="flex items-center gap-2 md:gap-3">
+          <Link
+            href="/"
+            className="font-[family-name:var(--font-display)] text-xl leading-none text-mustard drop-shadow-[3px_3px_0_#e63946] md:text-2xl"
+          >
+            INFINITE
+          </Link>
+          <span className="whitespace-nowrap rounded-sm border-2 border-teal bg-black/60 px-2 py-0.5 text-xs font-bold tracking-widest text-teal">
+            REPLAY
+          </span>
+        </div>
+        <div className="flex items-center gap-2 md:gap-3">
+          <ShareButton clipId={clip.id} title={clip.title} />
+          <button
+            onClick={() => setSound(!soundOn)}
+            aria-label={soundOn ? "Turn sound off" : "Turn sound on"}
+            className="whitespace-nowrap rounded-sm border-2 border-cream/60 bg-black/60 px-3 py-1 text-xs font-bold tracking-widest hover:border-teal hover:text-teal"
+          >
+            <span className="md:hidden">{soundOn ? "🔊 ON" : "🔇 OFF"}</span>
+            <span className="hidden md:inline">
+              {soundOn ? "SOUND: ON" : "SOUND: OFF"}
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {/* ---- player ---- */}
+      <div
+        className="scanlines relative aspect-video w-full shrink-0 md:absolute md:inset-0 md:aspect-auto"
+        onClick={() => !soundOn && setSound(true)}
+      >
         <video
           ref={videoRef}
           src={clip.videoUrl}
@@ -42,49 +74,29 @@ export default function ClipClient({
           className="h-full w-full object-contain"
         />
         {!soundOn && (
-          <div className="pointer-events-none absolute bottom-28 left-1/2 -translate-x-1/2 rounded-sm border-2 border-mustard bg-black/75 px-4 py-2 text-xs font-bold tracking-[0.2em] text-mustard">
-            🔇 TAP FOR SOUND
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="rounded-sm border-2 border-mustard bg-black/75 px-4 py-2 text-xs font-bold tracking-[0.2em] text-mustard">
+              🔇 TAP FOR SOUND
+            </div>
           </div>
         )}
       </div>
 
-      {/* ---- top bar ---- */}
-      <div className="absolute left-0 right-0 top-0 flex items-center justify-between p-4">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/"
-            className="font-[family-name:var(--font-display)] text-2xl leading-none text-mustard drop-shadow-[3px_3px_0_#e63946]"
-          >
-            INFINITE
-          </Link>
-          <span className="rounded-sm border-2 border-teal bg-black/60 px-2 py-0.5 text-xs font-bold tracking-widest text-teal">
-            REPLAY
-          </span>
-        </div>
-        <div className="flex items-center gap-3">
-          <ShareButton clipId={clip.id} title={clip.title} />
-          <button
-            onClick={() => setSound(!soundOn)}
-            className="rounded-sm border-2 border-cream/60 bg-black/60 px-3 py-1 text-xs font-bold tracking-widest hover:border-teal hover:text-teal"
-          >
-            {soundOn ? "SOUND: ON" : "SOUND: OFF"}
-          </button>
-        </div>
-      </div>
-
       {/* ---- lower third ---- */}
-      <div className="pointer-events-none absolute bottom-20 left-4 max-w-[80vw] border-l-4 border-orange bg-black/70 px-4 py-2 md:bottom-24">
-        <div className="text-[10px] uppercase tracking-[0.3em] text-teal">
-          From the archive
+      <div className="pointer-events-none min-h-0 flex-1 px-3 pt-3 md:absolute md:bottom-24 md:left-4 md:flex-none md:p-0">
+        <div className="w-fit max-w-full border-l-4 border-orange bg-black/70 px-4 py-2 md:max-w-[80vw]">
+          <div className="text-[10px] uppercase tracking-[0.3em] text-teal">
+            From the archive
+          </div>
+          <div className="font-[family-name:var(--font-display)] text-base text-cream md:text-lg">
+            {clip.title}
+          </div>
+          <div className="text-xs opacity-70">{credit}</div>
         </div>
-        <div className="font-[family-name:var(--font-display)] text-lg text-cream">
-          {clip.title}
-        </div>
-        <div className="text-xs opacity-70">{credit}</div>
       </div>
 
       {/* ---- bottom bar ---- */}
-      <div className="absolute bottom-0 left-0 right-0 flex items-center gap-3 border-t-4 border-mustard bg-panel px-4 py-3">
+      <div className="flex shrink-0 items-center gap-3 border-t-4 border-mustard bg-panel px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:absolute md:inset-x-0 md:bottom-0 md:px-4">
         <Link
           href="/"
           className="shrink-0 rounded-sm border-2 border-orange bg-orange px-4 py-2 font-[family-name:var(--font-display)] text-sm text-void hover:border-mustard hover:bg-mustard"

@@ -31,6 +31,14 @@ viewer idea ──► durable "preparing" job ──► UI shows AI REVIEW immed
   Generation is always viewer-triggered: nobody watching, nothing spent.
 - **Moderation before payment**: Claude rejects mean-spirited stuff up front, so
   nobody pays for a clip that won't air.
+- **Tweet clippings**: paste an `x.com/…/status/…` link in a pitch (or FUND a chat
+  message containing one) and the writers' room fetches that post plus the chain
+  of posts it replies to, then writes the sketch around the moment rather than the
+  people. It reads X's public embed JSON (via `api.fxtwitter.com`, falling back to
+  the syndication CDN), so no X API key or spend; sibling replies are not fetched,
+  since those need the paid X API. Unofficial endpoints can break, so any fetch
+  failure just writes from the idea alone. `TWEET_CONTEXT=0` disables,
+  `TWEET_MAX_HOPS` (default 6) caps the walk.
 - **Responsive submission**: `/api/submit` stores the pitch and returns its job ID
   before Claude runs. The UI shows the AI review stage while a post-response task
   writes the script. Voltage receives an invoice request only after the complete

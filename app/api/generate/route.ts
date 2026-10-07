@@ -251,6 +251,12 @@ async function generateHouse() {
 
     const { idea } = await generateIdea();
     const moderation = await moderateAndExpand(idea);
+    if (!moderation.allowed) {
+      // A rejected house pitch has no prompt to render; the next viewer
+      // trigger writes a fresh one.
+      console.warn(`house idea rejected (${moderation.reason}):`, idea);
+      return Response.json({ status: "rejected" }, { status: 202 });
+    }
     const video = await generateVideo(moderation.videoPrompt);
     const clipId = randomUUID();
     const { videoUrl, sourceUrl } = await archiveOrKeep(clipId, video.url);

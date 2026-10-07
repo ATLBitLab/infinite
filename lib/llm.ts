@@ -1,12 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config, mockMode, STYLE_PROMPT } from "./config";
+import { moderateIdea } from "./moderation";
 import type { JobRenderer } from "./types";
 
-/** LLM layer: idea generation, content moderation, and video-prompt expansion.
+/** LLM layer: idea generation and video-prompt expansion. Moderation is a
+ * TypeSafe classifier (lib/moderation.ts) that runs before Claude is called.
  * Falls back to canned behavior when ANTHROPIC_API_KEY is unset. */
 
-/** Cheapest/fastest model by default (moderation + short comedy prompts
- * don't need frontier reasoning). Override with LLM_MODEL for a smarter
+/** Cheapest/fastest model by default (short comedy prompts don't need
+ * frontier reasoning). Override with LLM_MODEL for a smarter
  * writers' room, e.g. LLM_MODEL=claude-opus-5. */
 const MODEL = process.env.LLM_MODEL ?? "claude-haiku-4-5";
 
@@ -87,7 +89,8 @@ function parseJson<T>(raw: string): T {
   return JSON.parse(match[0]) as T;
 }
 
-/** Moderate a submitted idea and write the episode in one call.
+/** Moderate a submitted idea, then write the episode if it passes. Rejected
+ * pitches never reach Claude, so they cost one classifier call.
  * `segments` holds the scene lengths in seconds — one entry for a normal
  * clip, several for a long episode rendered as chained scenes.
  * `renderer: "director"` writes a show bible plus one beat per segment for a
@@ -98,7 +101,17 @@ export async function moderateAndExpand(
   signal?: AbortSignal,
   renderer: JobRenderer = "fal",
 ): Promise<ModerationResult> {
-  if (mockMode.llm) return mockModerate(idea, segments, renderer);
+  const verdict = await moderateIdea(idea, signal);
+  if (!verdict.allowed) {
+    return {
+      allowed: false,
+      reason: verdict.reason,
+      title: "",
+      videoPrompt: "",
+      scenePrompts: [],
+    };
+  }
+  if (mockMode.llm) return mockExpand(idea, segments, renderer);
 
   const director = renderer === "director";
   const multi = segments.length > 1;
@@ -113,24 +126,40 @@ export async function moderateAndExpand(
 
   const system = `${VIBE}
 
-You are the channel's standards-and-practices editor AND head writer. Given a viewer-submitted
-idea, decide whether it fits the channel, and if it does, write the video generation prompt${multi ? "s" : ""}.
+You are the channel's head writer. Standards & Practices has already approved this
+viewer-submitted idea; write the video generation prompt${multi ? "s" : ""} for it. Keep it within
+the channel's tone even if the pitch leans edgier than the vibe above.
 
 Respond with ONLY a JSON object:
 {
-  "allowed": boolean,       // false for mean-spirited, hateful, harassing, sexual, gory, illegal, or targeted-at-a-private-person content
-  "reason": string,         // one playful sentence shown to the submitter (esp. when rejected)
+  "reason": string,         // one playful sentence greenlighting the pitch, shown to the submitter
   "title": string,          // punchy on-screen title, max 8 words
   ${sceneSpec}
 }`;
 
-  const result = await callClaude(
-    system,
-    `Viewer idea: ${JSON.stringify(idea)}`,
-    signal,
-  );
+  let result: string;
+  try {
+    result = await callClaude(
+      system,
+      `Viewer idea: ${JSON.stringify(idea)}`,
+      signal,
+    );
+  } catch (err) {
+    // Backstop for anything the classifier let through: a writer refusal is
+    // a rejection, not a transient error worth retrying.
+    if (err instanceof Error && err.message === "model_refused") {
+      return {
+        allowed: false,
+        reason: "Standards & Practices says: the writers' room passed on this one.",
+        title: "",
+        videoPrompt: "",
+        scenePrompts: [],
+      };
+    }
+    throw err;
+  }
   const parsed = parseJson<
-    ModerationResult & {
+    Omit<ModerationResult, "allowed"> & {
       characterSheet?: string;
       scenes?: string[];
       premise?: string;
@@ -139,7 +168,7 @@ Respond with ONLY a JSON object:
   >(result);
 
   const base = {
-    allowed: Boolean(parsed.allowed),
+    allowed: true,
     reason: String(parsed.reason ?? ""),
     title: String(parsed.title ?? "Untitled").slice(0, 80),
   };
@@ -148,7 +177,7 @@ Respond with ONLY a JSON object:
     const beats = (Array.isArray(parsed.beats) ? parsed.beats : [])
       .slice(0, segments.length)
       .map((b) => String(b).trim());
-    if (base.allowed && (beats.length !== segments.length || !parsed.premise)) {
+    if (beats.length !== segments.length || !parsed.premise) {
       throw new Error("episode writer returned wrong beat count");
     }
     return {
@@ -163,7 +192,7 @@ Respond with ONLY a JSON object:
     const scenes = (Array.isArray(parsed.scenes) ? parsed.scenes : [])
       .slice(0, segments.length)
       .map((s) => `${String(s)} ${sheet} ${STYLE_PROMPT}`.trim());
-    if (base.allowed && scenes.length !== segments.length) {
+    if (scenes.length !== segments.length) {
       throw new Error("episode writer returned wrong scene count");
     }
     return { ...base, videoPrompt: scenes[0] ?? "", scenePrompts: scenes };
@@ -193,35 +222,27 @@ a scene, not a topic. Respond with ONLY a JSON object:
 
 // ---------- mock fallbacks (no API key) ----------
 
-const BLOCKLIST = ["kill", "murder", "nazi", "rape", "porn", "sex", "gore"];
-
-function mockModerate(
+function mockExpand(
   idea: string,
   segments: number[],
   renderer: JobRenderer = "fal",
 ): ModerationResult {
-  const lower = idea.toLowerCase();
-  const blocked = BLOCKLIST.some((w) => lower.includes(w));
   const videoPrompt = `${idea}. ${STYLE_PROMPT}`;
+  const base = {
+    allowed: true,
+    reason: "Greenlit by a mock producer (no LLM key set).",
+    title: idea.split(/\s+/).slice(0, 6).join(" "),
+    videoPrompt,
+  };
   if (renderer === "director") {
     return {
-      allowed: !blocked,
-      reason: blocked
-        ? "Standards & Practices says: keep it playful, champ."
-        : "Greenlit by a mock producer (no LLM key set).",
-      title: idea.split(/\s+/).slice(0, 6).join(" "),
-      videoPrompt,
+      ...base,
       directorPremise: videoPrompt,
       scenePrompts: segments.map((_, i) => `${idea} (beat ${i + 1})`),
     };
   }
   return {
-    allowed: !blocked,
-    reason: blocked
-      ? "Standards & Practices says: keep it playful, champ."
-      : "Greenlit by a mock producer (no LLM key set).",
-    title: idea.split(/\s+/).slice(0, 6).join(" "),
-    videoPrompt,
+    ...base,
     scenePrompts: segments.map((_, i) =>
       segments.length > 1 ? `${videoPrompt} (scene ${i + 1})` : videoPrompt,
     ),

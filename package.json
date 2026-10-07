@@ -10,6 +10,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
     "@fal-ai/client": "^1.10.1",
+    "@typesafe-ai/sdk": "^0.6.0",
     "@upstash/redis": "^1.38.3",
     "@vercel/sandbox": "^3.2.1",
     "aws4fetch": "^1.0.20",

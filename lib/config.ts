@@ -66,8 +66,17 @@ export const config = {
     publicUrl: (process.env.R2_PUBLIC_URL ?? "").replace(/\/+$/, ""),
   },
 
-  // Anthropic — ideas, moderation, prompt expansion
+  // Anthropic — ideas and prompt expansion (the writers' room)
   anthropicKey: process.env.ANTHROPIC_API_KEY ?? "",
+
+  // TypeSafe — Jev classifier that moderates pitches before Claude sees them
+  typesafe: {
+    apiKey: process.env.TYPESAFE_API_KEY ?? "",
+    model: process.env.TYPESAFE_MODEL ?? "jev-latest",
+    // Reject when any policy check's yes-probability reaches this. Lower is
+    // stricter (more false rejects); higher lets more borderline pitches air.
+    threshold: floatEnv("MODERATION_THRESHOLD", 0.5),
+  },
 
   // Voltage — bitcoin payments
   voltage: {

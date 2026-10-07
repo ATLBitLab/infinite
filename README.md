@@ -29,8 +29,10 @@ viewer idea ──► durable "preparing" job ──► UI shows AI REVIEW immed
   `HOUSE_FRESH_HOURS` (default 4) — a viewer's player triggers an auto-written
   clip (locked + capped by `MAX_DAILY_HOUSE_CLIPS` so it can't burn money).
   Generation is always viewer-triggered: nobody watching, nothing spent.
-- **Moderation before payment**: Claude rejects mean-spirited stuff up front, so
-  nobody pays for a clip that won't air.
+- **Moderation before payment**: a TypeSafe Jev classifier (`lib/moderation.ts`)
+  scores each pitch against six yes/no policy checks in one request and rejects
+  mean-spirited stuff up front, so nobody pays for a clip that won't air. Claude
+  only runs, as the writer, on pitches that pass.
 - **Responsive submission**: `/api/submit` stores the pitch and returns its job ID
   before Claude runs. The UI shows the AI review stage while a post-response task
   writes the script. Voltage receives an invoice request only after the complete
@@ -124,7 +126,7 @@ live service-by-service (each one falls back to mock independently).
 1. Import the repo into Vercel.
 2. Add an Upstash Redis integration (or set `UPSTASH_REDIS_REST_URL/TOKEN`) —
    required in prod; the in-memory store is dev-only.
-3. Set `FAL_KEY`, `ANTHROPIC_API_KEY`, the four Voltage account variables,
+3. Set `FAL_KEY`, `ANTHROPIC_API_KEY`, `TYPESAFE_API_KEY`, the four Voltage account variables,
    `CRON_SECRET`, and `VOLTAGE_WEBHOOK_ID` / `VOLTAGE_WEBHOOK_SECRET` as
    described below. For the director tier add `DIRECTOR_MAX_DURATION`,
    `RECORDER_SECRET` and `RECORDER_SANDBOX=1`; for the clip archive the five

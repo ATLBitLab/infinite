@@ -2,10 +2,12 @@
   "name": "infinite",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "node --test \"lib/*.test.ts\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

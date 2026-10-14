@@ -12,7 +12,7 @@ import {
 import { releaseRecorderSandbox } from "@/lib/sandbox";
 import { getStore, persistenceMisconfigured } from "@/lib/store";
 import { archiveOrKeep } from "@/lib/storage";
-import { scheduleClip } from "@/lib/stream";
+import { indexCreatorClip, scheduleClip } from "@/lib/stream";
 import type { Clip, Job } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -236,9 +236,13 @@ async function complete(body: {
       duration:
         Number.isFinite(duration) && duration > 0 ? Math.round(duration) : job.duration ?? 0,
       credit: job.credit,
+      creatorPubkey: job.creatorPubkey,
       createdAt: Date.now(),
     } satisfies Omit<Clip, "airAt">);
   }
+  // Outside the branch above so a retry after a crash between scheduling and
+  // indexing still lands the clip in its creator's history (idempotent).
+  await indexCreatorClip(clip);
 
   job.status = "done";
   delete job.generationLeaseUntil;

@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { QRCodeSVG } from "qrcode.react";
 import type { ActivityItem, NowPlaying, ViewerSample } from "@/lib/types";
 import {
   broadcastPurchase,
+  httpAuthHeader,
   hueForId,
   loadIdentity,
   type Identity,
@@ -351,6 +353,19 @@ export default function StreamClient() {
           )}
           {now?.clip && (
             <ShareButton clipId={now.clip.id} title={now.clip.title} />
+          )}
+          {identity && (
+            <Link
+              href="/me"
+              title={`${identity.name}: your videos`}
+              className="flex items-center gap-2 rounded-sm border-2 border-cream/60 bg-black/60 px-3 py-1 text-xs font-bold tracking-widest hover:border-teal hover:text-teal"
+            >
+              <span
+                className="h-3 w-3 rounded-full"
+                style={{ backgroundColor: `hsl(${hueForId(identity.shortId)} 70% 60%)` }}
+              />
+              MY VIDEOS
+            </Link>
           )}
           {chatOn && (
             <button
@@ -851,17 +866,22 @@ function SubmitModal({
     setModal({ phase: "reviewing", draft });
 
     try {
+      const payload = {
+        idea: draft.idea,
+        credit: draft.credit || identity?.name || "",
+        duration: draft.duration,
+      };
+      // Signs the submission with this browser's key so it shows up on /me.
+      // Optional: a signing failure still submits, just without history.
+      const auth = await httpAuthHeader("/api/submit", "POST", payload).catch(() => null);
       const res = await fetch("/api/submit", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-Infinite-Submit-Version": "2",
+          ...(auth ? { Authorization: auth } : {}),
         },
-        body: JSON.stringify({
-          idea: draft.idea,
-          credit: draft.credit || identity?.name || "",
-          duration: draft.duration,
-        }),
+        body: JSON.stringify(payload),
         signal: controller.signal,
       });
       const data = await res.json();

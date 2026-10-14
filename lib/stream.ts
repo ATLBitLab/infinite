@@ -25,6 +25,13 @@ export async function scheduleClip(
   return scheduled;
 }
 
+/** Add a purchased clip to its creator's durable /me history. Safe to call
+ * again for the same clip: the index is a set keyed by clip id. */
+export async function indexCreatorClip(clip: Clip): Promise<void> {
+  if (!clip.creatorPubkey) return;
+  await getStore().indexCreatorClip(clip.creatorPubkey, clip.id, clip.createdAt);
+}
+
 export async function nowPlaying(): Promise<NowPlaying> {
   const store = getStore();
   const clips = await store.getClips();
@@ -62,7 +69,7 @@ export async function nowPlaying(): Promise<NowPlaying> {
   if (live) {
     return {
       ...empty,
-      clip: live,
+      clip: publicClip(live),
       offsetMs: now - live.airAt,
       upNext,
     };
@@ -76,7 +83,7 @@ export async function nowPlaying(): Promise<NowPlaying> {
   for (const clip of ordered) {
     const len = clip.duration * 1000;
     if (position < len) {
-      return { ...empty, clip, offsetMs: position, rerun: true, upNext };
+      return { ...empty, clip: publicClip(clip), offsetMs: position, rerun: true, upNext };
     }
     position -= len;
   }
@@ -89,5 +96,14 @@ export async function nowPlaying(): Promise<NowPlaying> {
 export async function findClip(id: string): Promise<Clip | null> {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
   const clips = await getStore().getClips();
-  return clips.find((c) => c.id === id) ?? null;
+  const clip = clips.find((c) => c.id === id);
+  return clip ? publicClip(clip) : null;
+}
+
+/** A clip as viewers see it. The buyer's pubkey stays server-side so airing
+ * or sharing a clip never reveals who bought it; /me is the only way to list
+ * a creator's clips, and it needs their signature. */
+function publicClip(clip: Clip): Clip {
+  const { creatorPubkey: _creator, ...rest } = clip;
+  return rest;
 }

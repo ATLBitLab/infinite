@@ -1,5 +1,6 @@
 import { generateSecretKey, getPublicKey, finalizeEvent } from "nostr-tools/pure";
 import { SimplePool } from "nostr-tools/pool";
+import { getToken } from "nostr-tools/nip98";
 import { nameForPubkey } from "@/lib/names";
 
 export { nameForPubkey, hueForId } from "@/lib/names";
@@ -64,6 +65,25 @@ export function loadIdentity(): Identity {
   const sk = getSecretKey();
   const pubkey = getPublicKey(sk);
   return { pubkey, shortId: pubkey.slice(0, 16), name: nameForPubkey(pubkey) };
+}
+
+/** NIP-98 `Authorization` header proving this browser's key for one request
+ * to `path` on this origin. For a JSON body, pass the object and send
+ * exactly `JSON.stringify(payload)`: the signed payload hash covers that
+ * string. Async so a storage failure rejects instead of throwing. */
+export async function httpAuthHeader(
+  path: string,
+  method: string,
+  payload?: Record<string, unknown>,
+): Promise<string> {
+  const sk = getSecretKey();
+  return getToken(
+    new URL(path, location.origin).toString(),
+    method,
+    (e) => finalizeEvent(e, sk),
+    true,
+    payload,
+  );
 }
 
 /** Broadcast the purchase as a signed kind-1 note. Fire-and-forget: relay

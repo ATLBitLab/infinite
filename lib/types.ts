@@ -19,6 +19,9 @@ export interface Clip {
   duration: number;
   /** Optional credit line, e.g. a name or npub. */
   credit?: string;
+  /** Hex pubkey of the browser identity that bought this clip, when the
+   * submission carried a valid NIP-98 signature. Drives /me history. */
+  creatorPubkey?: string;
   /** Epoch ms when this clip is scheduled to air. 0 = library-only (rerun pool). */
   airAt: number;
   createdAt: number;
@@ -50,6 +53,9 @@ export interface Job {
   /** Empty only while the writers' room is preparing the submission. */
   videoPrompt: string;
   credit?: string;
+  /** Verified submitter pubkey (hex). Absent when the submit signature was
+   * missing or invalid; the purchase proceeds either way. */
+  creatorPubkey?: string;
   paymentId?: string;
   /** Requested amount. Persisted before invoice creation so webhook updates
    * can complete the job without relying on the Payments API read model. */

@@ -73,6 +73,14 @@ interface Store {
   /** Rolling public activity feed (paid submissions), newest first. */
   pushActivity(item: ActivityItem): Promise<void>;
   getActivity(): Promise<ActivityItem[]>;
+  /** Per-creator history for /me. The job index expires with the jobs it
+   * points at; the clip index never expires and is a set, so a retried
+   * completion re-adding the same clip id cannot list it twice. */
+  indexCreatorJob(pubkey: string, jobId: string, createdAt: number): Promise<void>;
+  getCreatorJobs(pubkey: string): Promise<Job[]>;
+  indexCreatorClip(pubkey: string, clipId: string, createdAt: number): Promise<void>;
+  /** Newest first. */
+  getCreatorClipIds(pubkey: string, limit: number): Promise<string[]>;
 }
 
 const PRESENCE_KEY = "infinite:presence";
@@ -88,6 +96,10 @@ const GENERATION_JOBS_KEY = "infinite:generation-jobs";
 const LEGACY_DEFERRED_JOBS_KEY = "infinite:deferred";
 const PENDING_PAYMENT_SCAN_CURSOR_KEY = "infinite:pending-payment-scan-cursor";
 const JOB_TTL_SECONDS = 60 * 60 * 24 * 7;
+// Sorted sets scored by createdAt. Clips: durable. Jobs: same TTL as jobs.
+const CREATOR_CLIPS_PREFIX = "infinite:creator:";
+const CREATOR_JOBS_PREFIX = "infinite:creator-jobs:";
+const CREATOR_JOBS_MAX = 50;
 
 const CREATE_PREPARING_JOB_SCRIPT = `
 local raw = redis.call("GET", KEYS[1])
@@ -618,6 +630,44 @@ class RedisStore implements Store {
       return { ...item, name: repairCredit(item.name, item.id) };
     });
   }
+  async indexCreatorJob(pubkey: string, jobId: string, createdAt: number): Promise<void> {
+    const key = CREATOR_JOBS_PREFIX + pubkey;
+    await this.redis
+      .pipeline()
+      .zadd(key, { score: createdAt, member: jobId })
+      // Prune ids whose job records have already expired.
+      .zremrangebyscore(key, 0, Date.now() - JOB_TTL_SECONDS * 1000)
+      .expire(key, JOB_TTL_SECONDS)
+      .exec();
+  }
+  async getCreatorJobs(pubkey: string): Promise<Job[]> {
+    const ids = await this.redis.zrange<string[]>(
+      CREATOR_JOBS_PREFIX + pubkey,
+      0,
+      CREATOR_JOBS_MAX - 1,
+      { rev: true },
+    );
+    if (ids.length === 0) return [];
+    const rawJobs = await this.redis.mget<(Job | string | null)[]>(
+      ...ids.map((id) => JOB_PREFIX + id),
+    );
+    return rawJobs.flatMap((raw) =>
+      raw ? [typeof raw === "string" ? (JSON.parse(raw) as Job) : raw] : [],
+    );
+  }
+  async indexCreatorClip(pubkey: string, clipId: string, createdAt: number): Promise<void> {
+    await this.redis.zadd(
+      CREATOR_CLIPS_PREFIX + pubkey,
+      { nx: true },
+      { score: createdAt, member: clipId },
+    );
+  }
+  async getCreatorClipIds(pubkey: string, limit: number): Promise<string[]> {
+    if (limit <= 0) return [];
+    return this.redis.zrange<string[]>(CREATOR_CLIPS_PREFIX + pubkey, 0, limit - 1, {
+      rev: true,
+    });
+  }
 }
 
 function parseViewerMember(member: string): ViewerSample {
@@ -892,6 +942,42 @@ class MemoryStore implements Store {
   async getActivity() {
     return [...this.activity];
   }
+  private creatorJobs = new Map<string, Map<string, number>>();
+  private creatorClips = new Map<string, Map<string, number>>();
+  async indexCreatorJob(pubkey: string, jobId: string, createdAt: number) {
+    indexMember(this.creatorJobs, pubkey, jobId, createdAt);
+  }
+  async getCreatorJobs(pubkey: string) {
+    return newestFirst(this.creatorJobs.get(pubkey), CREATOR_JOBS_MAX).flatMap((id) => {
+      const job = this.jobs.get(id);
+      return job ? [job] : [];
+    });
+  }
+  async indexCreatorClip(pubkey: string, clipId: string, createdAt: number) {
+    indexMember(this.creatorClips, pubkey, clipId, createdAt);
+  }
+  async getCreatorClipIds(pubkey: string, limit: number) {
+    return newestFirst(this.creatorClips.get(pubkey), limit);
+  }
+}
+
+function indexMember(
+  index: Map<string, Map<string, number>>,
+  owner: string,
+  member: string,
+  score: number,
+) {
+  let members = index.get(owner);
+  if (!members) index.set(owner, (members = new Map()));
+  if (!members.has(member)) members.set(member, score);
+}
+
+function newestFirst(members: Map<string, number> | undefined, limit: number): string[] {
+  if (!members) return [];
+  return [...members]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, Math.max(0, limit))
+    .map(([id]) => id);
 }
 
 // Persist the memory store across dev hot-reloads via globalThis.

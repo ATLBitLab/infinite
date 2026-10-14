@@ -5,6 +5,7 @@ import { getStore, persistenceMisconfigured } from "@/lib/store";
 import { FAL_LOCK_FLAG } from "@/lib/fal";
 import { directorAvailable } from "@/lib/generation";
 import { config } from "@/lib/config";
+import { verifyNip98 } from "@/lib/nip98";
 import { prepareSubmission } from "@/lib/submission-preflight";
 import type { Job } from "@/lib/types";
 
@@ -38,12 +39,18 @@ export async function POST(request: Request) {
       { status: 503 },
     );
   }
+  let raw: string;
   let body: { idea?: string; credit?: string; duration?: number };
   try {
-    body = await request.json();
+    raw = await request.text();
+    body = JSON.parse(raw);
   } catch {
     return Response.json({ error: "bad json" }, { status: 400 });
   }
+  // Optional NIP-98 proof of the browser identity, used only for /me history.
+  // A missing or bad signature never blocks a purchase; the job just records
+  // no creator.
+  const creatorPubkey = verifyNip98(request, raw) ?? undefined;
 
   const idea = (body.idea ?? "").trim().slice(0, 500);
   const credit = (body.credit ?? "").trim().slice(0, 50) || undefined;
@@ -75,12 +82,18 @@ export async function POST(request: Request) {
       title: "",
       videoPrompt: "",
       credit,
+      creatorPubkey,
       duration,
       renderer,
       segmentDurations: segments,
       createdAt: Date.now(),
     };
     const stored = await store.createPreparingJob(job);
+    if (creatorPubkey) {
+      await store
+        .indexCreatorJob(creatorPubkey, jobId, job.createdAt)
+        .catch((err) => console.error("creator job index failed:", err));
+    }
 
     after(() => prepareSubmission(jobId));
 

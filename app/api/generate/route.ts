@@ -14,7 +14,7 @@ import { generateIdea } from "@/lib/llm";
 import { moderateAndExpand } from "@/lib/llm";
 import { spawnRecorderSandbox } from "@/lib/sandbox";
 import { archiveOrKeep } from "@/lib/storage";
-import { scheduleClip } from "@/lib/stream";
+import { indexCreatorClip, scheduleClip } from "@/lib/stream";
 import { getStore, persistenceMisconfigured } from "@/lib/store";
 import { config } from "@/lib/config";
 import type { Clip, Job } from "@/lib/types";
@@ -110,8 +110,14 @@ async function runGeneration(job: Job) {
     sourceUrl,
     duration: totalDuration,
     credit: job.credit,
+    creatorPubkey: job.creatorPubkey,
     createdAt: Date.now(),
   } satisfies Omit<Clip, "airAt">);
+  // History bookkeeping must never throw past this point: the caller would
+  // treat it as a render failure and pay for the episode again.
+  await indexCreatorClip(clip).catch((err) =>
+    console.error(`creator clip index failed for ${clip.id}:`, err),
+  );
 
   job.status = "done";
   job.clipId = clip.id;
